@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Assistant avatar — clip preview</title>
+<style>
+  body{margin:0;background:#1f242b;color:#e7e9ec;font:14px system-ui,sans-serif;overflow:hidden}
+  #bar{position:fixed;top:12px;left:12px;display:flex;gap:8px;flex-wrap:wrap;z-index:2}
+  button{background:#2f3b52;color:#fff;border:0;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer}
+  button:hover{background:#3a496b}
+  #hint{position:fixed;bottom:12px;left:12px;opacity:.6;z-index:2}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="hint">drag to orbit · scroll to zoom · must be served over http (e.g. <code>npx serve</code>)</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.185.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.185.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1f242b);
+const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 1.0, 3.4);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+const d1 = new THREE.DirectionalLight(0xffffff, 1.1); d1.position.set(2,4,3); scene.add(d1);
+const d2 = new THREE.DirectionalLight(0xffffff, 0.4); d2.position.set(-3,2,-2); scene.add(d2);
+const grid = new THREE.GridHelper(6, 12, 0x3a414b, 0x2a313a); scene.add(grid);
+
+let mixer, actions = {}, current;
+function play(name){
+  if(!actions[name] || current===actions[name]) return;
+  actions[name].reset().fadeIn(0.25).play();
+  if(current) current.fadeOut(0.25);
+  current = actions[name];
+}
+
+new GLTFLoader().load('./assistant.glb', (gltf)=>{
+  scene.add(gltf.scene);
+  mixer = new THREE.AnimationMixer(gltf.scene);
+
+  const bar = document.getElementById('bar');
+  bar.innerHTML = '';
+
+  gltf.animations.forEach((clip, index) => {
+    actions[clip.name] = mixer.clipAction(clip);
+
+    const button = document.createElement('button');
+    button.textContent = clip.name || `Animation ${index + 1}`;
+    button.onclick = () => play(clip.name);
+    bar.appendChild(button);
+  });
+
+  if (gltf.animations.length) {
+    const defaultClip = gltf.animations.find(c => c.name === 'Idle') || gltf.animations[0];
+    play(defaultClip.name);
+    document.getElementById('hint').textContent = `${gltf.animations.length} animation${gltf.animations.length === 1 ? '' : 's'} loaded · drag to orbit · scroll to zoom`;
+  } else {
+    document.getElementById('hint').textContent = 'No animations found in assistant.glb · drag to orbit · scroll to zoom';
+  }
+}, undefined, (e)=>{
+  console.error(e);
+  document.getElementById('hint').textContent = 'Failed to load assistant.glb — serve over http (npx serve), don\'t open as file://';
+});
+
+const timer = new THREE.Timer();
+(function loop(t){
+  requestAnimationFrame(loop);
+  timer.update(t);
+  if(mixer) mixer.update(timer.getDelta());
+  controls.update();
+  renderer.render(scene, camera);
+})();
+addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>

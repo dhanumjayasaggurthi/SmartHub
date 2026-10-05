@@ -1,0 +1,312 @@
+/* Dashboard landing page. Every class is shd- prefixed so nothing here can
+   collide with Tailwind utilities (.grid, .badge ...) used elsewhere. */
+
+/* index.css only ships Display 300/400/700; the stat-weight headings here use Medium */
+@font-face {
+  font-family: 'JohnsonDisplay';
+  src: url('/fonts/JohnsonDisplay-Medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+.shd {
+  --red: #eb1700; --blue: #0f68b2; --violet: #8c3bbb; --green: #328714;
+  --g2: #e8e6e3; --g3: #d5cfc9; --g4: #cbc4bc; --g5: #a39992; --g7: #6e6259; --g8: #312c2a;
+  --display: 'JohnsonDisplay', Arial, Helvetica, sans-serif;
+  --text: 'JohnsonText', Arial, Helvetica, sans-serif;
+  --ease: cubic-bezier(.16,1,.3,1);
+  height: 100%; overflow-y: auto; overflow-x: hidden;
+  container: shd / inline-size;
+  background: #f4f1ed; color: var(--g8); font-family: var(--text);
+}
+:where(.shd) button { font-family: inherit; color: inherit; }
+
+/* tinted icon: the SVGs are flat black art, so paint them through a mask */
+.shd-ico { display: block; flex: none; background: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+
+@keyframes shd-rise    { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+@keyframes shd-fade    { from { opacity: 0; } to { opacity: 1; } }
+@keyframes shd-halo    { 0%,100% { opacity: .55; } 50% { opacity: .95; } }
+@keyframes shd-ring    { 0% { opacity: .6; transform: scale(.82); } 100% { opacity: 0; transform: scale(1.6); } }
+@keyframes shd-spin    { to { transform: rotate(360deg); } }
+@keyframes shd-shimmer { 0% { transform: translateX(-130%) skewX(-18deg); } 60%,100% { transform: translateX(260%) skewX(-18deg); } }
+@keyframes shd-cardin  { from { opacity: 0; transform: translateY(18px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes shd-wordin  { from { opacity: 0; transform: translateY(.45em); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes shd-wordout { to { opacity: 0; transform: translateY(-.35em); filter: blur(6px); } }
+@keyframes shd-blink   { 50% { opacity: 0; } }
+@keyframes shd-sweepname { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes shd-pulse   { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+
+.shd-chip { display: inline-flex; align-items: center; gap: 10px; padding: 7px 14px; border-radius: 999px;
+  background: rgba(255,255,255,.74); border: 1px solid rgba(110,98,89,.16); box-shadow: 0 10px 26px -20px rgba(49,44,42,.6);
+  backdrop-filter: blur(8px); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--g7); white-space: nowrap; }
+.shd-chip .shd-sep { width: 1px; height: 12px; background: var(--g4); }
+.shd-chip b { font-family: var(--display); font-weight: 500; letter-spacing: .04em; color: var(--g8); font-size: 11.5px; text-transform: none; font-variant-numeric: tabular-nums; }
+.shd-dot { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--violet); box-shadow: 0 0 8px rgba(140,59,187,.6); }
+
+.shd-kbd { display: inline-flex; align-items: center; gap: 3px; height: 30px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--g2);
+  background: linear-gradient(#fff, #f7f5f3); font-size: 11.5px; color: var(--g7); box-shadow: 0 2px 0 var(--g2); white-space: nowrap; }
+
+/* ═══ hero ═══ */
+.shd-hero { position: relative; z-index: 2;
+  background: radial-gradient(120% 96% at 80% 4%, #fff 0%, #faf9f7 42%, #f4f1ed 76%, #efebe5 100%); }
+.shd-hero-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.shd-ambient { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: block; }
+.shd-veil { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(255,255,255,.7) 0%, rgba(255,255,255,0) 28%, rgba(244,241,237,.9) 100%); }
+.shd-glow { position: absolute; top: -18%; right: 4%; width: 46vw; height: 46vw; pointer-events: none; border-radius: 50%;
+  background: radial-gradient(circle, rgba(235,23,0,.12) 0%, rgba(140,59,187,.1) 40%, rgba(255,255,255,0) 70%); animation: shd-halo 9s ease-in-out infinite; }
+.shd-topbar { position: absolute; left: clamp(24px, 4vw, 60px); right: clamp(24px, 4vw, 60px); top: clamp(18px, 3vh, 30px);
+  display: flex; justify-content: flex-end; align-items: center; animation: shd-fade .8s ease both; z-index: 3; }
+.shd-hero-inner { position: relative; display: grid; grid-template-columns: minmax(380px, 1.02fr) minmax(360px, .98fr);
+  gap: clamp(24px, 3vw, 56px); align-items: center;
+  padding: clamp(28px, 4vh, 44px) clamp(24px, 4vw, 60px) clamp(16px, 2.4vh, 28px); }
+
+.shd-copy { position: relative; z-index: 2; max-width: 680px; }
+.shd-greet { font-family: var(--display); font-weight: 700; font-size: clamp(32px, 2.2vw + 1.8vh, 62px); line-height: .98; letter-spacing: -.035em;
+  margin: 0; animation: shd-rise .9s var(--ease) .14s both; }
+.shd-greet .shd-name { background: linear-gradient(100deg, var(--g8) 0%, var(--g8) 40%, var(--red) 50%, var(--g8) 60%, var(--g8) 100%);
+  background-size: 300% 100%; background-position: 100% 0; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shd-sweepname 2.4s var(--ease) 1s both; }
+.shd-line2 { display: block; font-weight: 300; font-style: italic; color: var(--red); min-height: 1.04em; margin-top: .06em; white-space: nowrap; }
+.shd-line2 .shd-w { display: inline-block; animation: shd-wordin .7s var(--ease) both; }
+.shd-line2.shd-out .shd-w { animation: shd-wordout .4s ease both; }
+.shd-lede { font-weight: 300; font-size: clamp(13px, .4vw + .9vh, 17px); line-height: 1.55; color: var(--g7); margin: clamp(12px, 2vh, 22px) 0 0; max-width: 500px; animation: shd-rise .9s var(--ease) .24s both; }
+
+/* command bar */
+.shd-cmd { position: relative; margin-top: clamp(16px, 2.6vh, 28px); max-width: 480px; animation: shd-rise .9s var(--ease) .34s both; z-index: 6; }
+.shd-cmd-box { position: relative; display: flex; align-items: center; gap: 11px; height: clamp(42px, 5.6vh, 48px); padding: 0 7px 0 15px; border-radius: 14px; cursor: text;
+  background: rgba(255,255,255,.9); border: 1px solid rgba(110,98,89,.18); backdrop-filter: blur(12px);
+  box-shadow: 0 24px 50px -30px rgba(49,44,42,.55), inset 0 1px 0 #fff; transition: border-color .25s ease, box-shadow .25s ease; }
+.shd-cmd-box:focus-within { border-color: rgba(235,23,0,.45); box-shadow: 0 26px 60px -28px rgba(235,23,0,.35), 0 0 0 4px rgba(235,23,0,.07); }
+.shd-cmd-box > .shd-ico { width: 15px; height: 15px; color: var(--red); }
+.shd-cmd-box .shd-kbd { height: 26px; padding: 0 8px; border-radius: 8px; font-size: 11px; }
+.shd-cmd-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-family: var(--text); font-size: 14px; color: var(--g8); }
+.shd-ph { position: absolute; left: 41px; right: 90px; pointer-events: none; font-size: 14px; color: var(--g5); white-space: nowrap; overflow: hidden; }
+.shd-caret { display: inline-block; width: 1px; height: 15px; background: var(--red); vertical-align: -3px; margin-left: 2px; animation: shd-blink 1s steps(1) infinite; }
+.shd-suggest { position: absolute; left: 0; right: 0; top: calc(100% + 8px); padding: 8px; border-radius: 18px; background: #fff;
+  border: 1px solid var(--g2); box-shadow: 0 34px 70px -34px rgba(49,44,42,.6); animation: shd-fade .18s ease both; }
+
+/* resume row */
+.shd-resume { max-width: 580px; margin-top: clamp(18px, 3vh, 32px); animation: shd-rise .9s var(--ease) .46s both; }
+.shd-resume-h { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; }
+.shd-resume-h span { font-size: 9.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--g7); white-space: nowrap; }
+.shd-resume-h hr { flex: 1; border: 0; height: 1px; background: linear-gradient(90deg, rgba(175,165,155,.5), rgba(175,165,155,0)); margin: 0; }
+.shd-resume-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.shd-rcard { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px 8px 8px; border-radius: 13px; cursor: pointer; text-align: left;
+  background: rgba(255,255,255,.88); backdrop-filter: blur(8px); border: 1px solid var(--g2); box-shadow: 0 18px 38px -30px rgba(49,44,42,.75);
+  transition: transform .3s var(--ease), border-color .3s ease, box-shadow .3s ease; overflow: hidden; }
+.shd-rcard:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--c) 45%, transparent); box-shadow: 0 20px 40px -26px var(--c); }
+.shd-rcard .shd-tile { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--c) 9%, #fff); }
+.shd-rcard .shd-tile .shd-ico { width: 15px; height: 15px; color: var(--c); }
+.shd-rcard .shd-t { flex: 1; min-width: 0; }
+.shd-rcard .shd-t b { display: block; font-family: var(--display); font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shd-rcard .shd-t small { display: block; margin-top: 2px; font-size: 10.5px; color: var(--g5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shd-rcard .shd-ago { color: var(--g7); }
+.shd-rcard .shd-arr { margin: 0 2px 0 auto; width: 10px; height: 10px; color: var(--c); transition: transform .3s var(--ease); }
+.shd-rcard:hover .shd-arr { transform: translateX(3px); }
+.shd-rcard .shd-prog { position: absolute; left: 0; bottom: 0; height: 2px; width: var(--p); background: linear-gradient(90deg, transparent, var(--c)); opacity: .6; }
+
+/* ═══ orbit ═══ */
+/* side by side, the orbit takes the text column's height (so the hero never
+   grows past its copy); stacked, it falls back to a fixed shape */
+.shd-orbit-wrap { position: relative; z-index: 1; justify-self: center; align-self: stretch; width: 100%; max-width: 680px; min-height: 300px; animation: shd-fade 1.4s ease .25s both; }
+.shd-orbit { position: absolute; inset: 0; transition: transform .6s var(--ease); }
+.shd-orbit canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.shd-sweep { position: absolute; left: 50%; top: 50%; width: 92%; aspect-ratio: 1; pointer-events: none; transform: translate(-50%, -50%) scaleY(.5); }
+.shd-sweep > div { position: absolute; inset: 0; border-radius: 50%; animation: shd-spin 14s linear infinite;
+  background: conic-gradient(from 0deg, rgba(235,23,0,.10) 0deg, rgba(235,23,0,.03) 38deg, transparent 80deg, transparent 360deg);
+  -webkit-mask: radial-gradient(circle, transparent 17%, #000 18%, #000 70%, transparent 71%); mask: radial-gradient(circle, transparent 17%, #000 18%, #000 70%, transparent 71%); }
+.shd-core { position: absolute; left: 50%; top: 50%; width: 150px; height: 150px; margin: -75px 0 0 -75px; z-index: 5; pointer-events: none; transform: scale(var(--k, 1)); }
+.shd-core .shd-r { position: absolute; inset: -16px; border-radius: 50%; border: 1px solid rgba(235,23,0,.4); animation: shd-ring 3.2s cubic-bezier(.3,0,.5,1) infinite; }
+.shd-core .shd-r.shd-b { animation-delay: 1.6s; border-color: rgba(15,104,178,.35); }
+.shd-core .shd-dash { position: absolute; inset: -14px; border-radius: 50%; border: 1.5px dashed rgba(235,23,0,.28); animation: shd-spin 40s linear infinite; }
+.shd-disc { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center; text-align: center;
+  background: radial-gradient(circle at 35% 28%, #fff 0%, #fbfaf8 55%, #f3efeb 100%); border: 1px solid var(--g2);
+  box-shadow: 0 30px 60px -28px rgba(49,44,42,.55), inset 0 -8px 20px rgba(175,165,155,.12); }
+.shd-disc i { display: block; width: 6px; height: 6px; margin: 0 auto 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 10px rgba(235,23,0,.7); animation: shd-pulse 2s ease-in-out infinite; }
+.shd-disc b { display: block; font-family: var(--display); font-weight: 700; font-size: 36px; letter-spacing: .02em; line-height: 1; }
+.shd-disc small { display: block; margin-top: 8px; font-size: 10px; letter-spacing: .22em; text-transform: uppercase; color: var(--g5); }
+
+.shd-onode { position: absolute; left: 0; top: 0; width: 58px; height: 58px; margin: -29px 0 0 -29px; padding: 0; border: 0; background: none; cursor: pointer; will-change: transform; outline: none; opacity: 0; }
+.shd-bub { position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center; background: #fff; border: 1px solid var(--g2);
+  box-shadow: 0 16px 30px -18px rgba(49,44,42,.55); transition: transform .35s var(--ease), box-shadow .35s ease, border-color .35s ease, background .35s ease; }
+.shd-bub .shd-ico { width: 24px; height: 24px; color: var(--c); transition: color .3s ease; }
+.shd-bub::before { content: ''; position: absolute; inset: 4px; border-radius: 50%; background: var(--c); opacity: .07; }
+.shd-olbl { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); white-space: nowrap; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--g7); opacity: min(1, var(--lo, 1)); transition: color .3s ease; }
+.shd-onew { position: absolute; right: -2px; top: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--red); border: 2px solid #fff; box-shadow: 0 0 10px rgba(235,23,0,.6); }
+.shd-onode:hover .shd-bub, .shd-onode:focus-visible .shd-bub, .shd-onode.shd-on .shd-bub { transform: scale(1.18); background: var(--c); border-color: var(--c); box-shadow: 0 22px 40px -16px var(--c); }
+.shd-onode:hover .shd-bub .shd-ico, .shd-onode:focus-visible .shd-bub .shd-ico, .shd-onode.shd-on .shd-bub .shd-ico { color: #fff; }
+.shd-onode:hover .shd-olbl, .shd-onode.shd-on .shd-olbl { color: var(--g8); }
+
+.shd-otip { position: absolute; z-index: 20; width: 260px; padding: 16px 18px; border-radius: 16px; pointer-events: none;
+  background: rgba(255,255,255,.96); border: 1px solid var(--g2); box-shadow: 0 30px 60px -30px rgba(49,44,42,.6); backdrop-filter: blur(10px);
+  opacity: 0; transform: translateY(6px) scale(.98); transition: opacity .2s ease, transform .25s var(--ease); }
+.shd-otip.shd-show { opacity: 1; transform: none; }
+.shd-otip .shd-cat { font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--c); }
+.shd-otip h4 { margin: 6px 0; font-family: var(--display); font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
+.shd-otip p { margin: 0; font-size: 12px; line-height: 1.45; font-weight: 300; color: var(--g7); }
+.shd-otip .shd-go { margin-top: 10px; font-size: 11px; font-weight: 700; color: var(--red); letter-spacing: .04em; }
+.shd-orbit-caption { position: absolute; left: 50%; bottom: -4px; transform: translateX(-50%); }
+
+/* ═══ sections ═══ */
+.shd-section { padding: clamp(40px, 6vh, 64px) clamp(24px, 4vw, 60px) 0; }
+.shd-section.shd-first { padding-top: clamp(8px, 1.6vh, 20px); }
+.shd-sec-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; margin-bottom: 24px; }
+/* drop the pills by the kicker's height so they sit level with "Your toolkit." */
+.shd-sec-head .shd-filters { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; margin-top: 19px; }
+.shd-sec-head .shd-hint { text-align: right; }
+.shd-sec-head .shd-k { font-size: 10px; letter-spacing: .26em; text-transform: uppercase; color: var(--blue); font-weight: 700; }
+.shd-sec-head h2 { margin: 10px 0 0; font-family: var(--display); font-weight: 700; font-size: clamp(26px, 1.6vw + 1vh, 38px); letter-spacing: -.025em; line-height: 1; }
+.shd-sec-head h2 em { font-weight: 300; font-style: italic; color: var(--red); }
+.shd-sec-head p { margin: 10px 0 0; font-size: 13px; color: var(--g7); font-weight: 300; }
+.shd-sec-head .shd-hint { margin: 0; font-size: 12px; line-height: 1.7; color: var(--g5); font-weight: 400; }
+.shd-hint > .shd-ico { display: inline-block; width: 9px; height: 9px; margin-right: 7px; vertical-align: 0; color: var(--red); }
+.shd-hint-chip { display: inline-flex; align-items: center; height: 18px; margin: 0 4px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--g3); background: #fff; font-size: 10.5px; color: var(--g7); vertical-align: 1px; }
+
+.shd-seg { position: relative; display: inline-flex; flex-wrap: wrap; padding: 5px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid var(--g2); box-shadow: 0 14px 30px -24px rgba(49,44,42,.6); }
+.shd-seg button { position: relative; z-index: 1; height: 36px; padding: 0 18px; border: 0; border-radius: 999px; background: none; cursor: pointer; font-size: 13px; color: var(--g7); white-space: nowrap; transition: color .3s ease; }
+.shd-seg button.shd-on { color: #fff; }
+.shd-seg .shd-n { margin-left: 6px; font-size: 10.5px; opacity: .6; }
+.shd-pill { position: absolute; top: 5px; left: 0; height: 36px; border-radius: 999px; background: var(--red); box-shadow: 0 10px 22px -10px rgba(235,23,0,.7); transition: transform .45s var(--ease), width .45s var(--ease); }
+
+.shd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); gap: 18px; perspective: 1400px; }
+.shd-card { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 232px; padding: 22px 22px 18px; border-radius: 22px; cursor: pointer;
+  background: linear-gradient(160deg, #fff 0%, #fbfaf8 100%); border: 1px solid var(--g2); box-shadow: 0 20px 40px -34px rgba(49,44,42,.7);
+  transform-style: preserve-3d; transition: transform .45s var(--ease), box-shadow .45s ease, border-color .35s ease; overflow: hidden;
+  animation: shd-cardin .7s var(--ease) both; animation-delay: calc(var(--k) * 55ms); outline: none; }
+.shd-card::before { content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .35s ease;
+  background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 0%), color-mix(in srgb, var(--c) 11%, transparent), transparent 60%); }
+.shd-card::after { content: ''; position: absolute; left: 22px; right: 22px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--c);
+  transform: scaleX(0); transform-origin: left; transition: transform .5s var(--ease); }
+.shd-card:hover, .shd-card:focus-visible { border-color: color-mix(in srgb, var(--c) 40%, var(--g2)); box-shadow: 0 34px 60px -34px color-mix(in srgb, var(--c) 55%, rgba(49,44,42,.6)); }
+.shd-card:hover::before, .shd-card:focus-visible::before { opacity: 1; }
+/* card content sits above the spotlight, so the glow moves behind the tab chips */
+.shd-card > * { position: relative; z-index: 1; }
+.shd-card:hover::after, .shd-card:focus-visible::after { transform: scaleX(1); }
+.shd-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.shd-card .shd-tile { position: relative; width: 50px; height: 50px; border-radius: 15px; display: grid; place-items: center; flex: none;
+  background: linear-gradient(145deg, var(--c), color-mix(in srgb, var(--c) 70%, #000)); box-shadow: 0 14px 26px -14px var(--c); transition: transform .45s var(--ease); }
+.shd-card:hover .shd-tile { transform: translateZ(30px) rotate(-4deg) scale(1.06); }
+.shd-card .shd-tile .shd-ico { width: 24px; height: 24px; color: #fff; }
+.shd-card h3 { margin: 18px 0 0; font-family: var(--display); font-weight: 700; font-size: 18px; line-height: 1.18; letter-spacing: -.015em; }
+.shd-card .shd-cat { margin-top: 6px; font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--c); }
+.shd-card p { margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; font-weight: 300; color: var(--g7); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.shd-foot { margin-top: auto; padding-top: 14px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.shd-foot .shd-sp { flex: 1; }
+.shd-foot-tabs { flex-wrap: nowrap; overflow: hidden; }
+/* equal shares, each capped at its own width: short tabs stay whole and only
+   the long ones give way to an ellipsis */
+.shd-foot-tabs { gap: 5px; }
+.shd-foot-tabs .shd-sec-chip { flex: 1 1 0; max-width: max-content; min-width: 0; padding: 0 9px; overflow: hidden; text-overflow: ellipsis; }
+.shd-sec-chip { height: 26px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--g2); background: #fff; cursor: pointer; font-size: 11.5px; color: var(--g7); white-space: nowrap;
+  transition: border-color .2s ease, color .2s ease, background .2s ease; }
+.shd .shd-sec-chip:hover { border-color: var(--c); color: var(--c); }
+.shd-launch { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--c); }
+.shd-launch .shd-ar { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 9%, #fff); transition: transform .35s var(--ease), background .3s ease; }
+.shd-launch .shd-ar .shd-ico { width: 11px; height: 11px; color: var(--c); }
+.shd-card:hover .shd-launch .shd-ar { transform: translateX(4px); background: var(--c); }
+.shd-card:hover .shd-launch .shd-ar .shd-ico { color: #fff; }
+.shd-badge { position: relative; overflow: hidden; display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; background: var(--red); color: #fff;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .14em; box-shadow: 0 8px 16px -8px rgba(235,23,0,.8); }
+.shd-badge::after { content: ''; position: absolute; top: 0; bottom: 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.7), transparent); animation: shd-shimmer 3.2s ease-in-out infinite; }
+
+.shd-skel { min-height: 232px; border-radius: 22px; background: #fff; border: 1px solid var(--g2); padding: 22px; }
+.shd-skel span { display: block; border-radius: 8px; background: #efebe7; animation: shd-pulse 1.6s ease-in-out infinite; }
+
+.shd-empty-card { text-align: center; padding: 32px; }
+
+/* ═══ lower band ═══ */
+.shd-glass { background: linear-gradient(160deg, rgba(255,255,255,.96) 0%, rgba(250,249,247,.9) 100%); border: 1px solid rgba(110,98,89,.14);
+  border-radius: 26px; box-shadow: 0 40px 80px -50px rgba(49,44,42,.6), inset 0 1px 0 #fff; backdrop-filter: blur(14px); }
+.shd-band { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; }
+.shd-panel { padding: 26px 28px; }
+.shd-panel-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.shd-panel-h h3 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 19px; letter-spacing: -.015em; }
+.shd-panel-h button { border: 0; background: none; padding: 0; cursor: pointer; font-size: 12px; color: var(--red); font-weight: 700; }
+.shd-tl { position: relative; margin: 0; padding: 0 0 0 26px; list-style: none; }
+.shd-tl::before { content: ''; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 1px; background: linear-gradient(var(--red), rgba(175,165,155,.3)); }
+.shd-tl li { position: relative; padding: 0 0 20px; }
+.shd-tl li:last-child { padding-bottom: 0; }
+.shd-tl li::before { content: ''; position: absolute; left: -26px; top: 4px; width: 13px; height: 13px; border-radius: 50%; background: #fff; border: 2px solid var(--c, var(--red)); box-shadow: 0 0 0 4px #fff; }
+.shd-tl .shd-d { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--g5); }
+.shd-tl b { display: block; margin-top: 4px; font-family: var(--display); font-weight: 500; font-size: 15px; }
+.shd-tl p { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; font-weight: 300; color: var(--g7); }
+.shd-tag { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; vertical-align: 2px;
+  color: var(--c); background: color-mix(in srgb, var(--c) 8%, #fff); border: 1px solid color-mix(in srgb, var(--c) 25%, #fff); font-family: var(--text); font-weight: 700; }
+.shd-quiet { font-size: 13px; font-weight: 300; color: var(--g7); margin: 0; }
+
+.shd-keys { display: flex; flex-direction: column; gap: 10px; }
+.shd-keyrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 14px; background: #fff; border: 1px solid var(--g2); font-size: 13px; color: var(--g7); }
+.shd-keyrow .shd-kbd { height: 26px; font-size: 11px; }
+.shd-gov { margin-top: 18px; padding: 16px 18px; border-radius: 16px; display: flex; gap: 14px; align-items: center;
+  background: linear-gradient(120deg, rgba(15,104,178,.07), rgba(140,59,187,.06)); border: 1px solid rgba(15,104,178,.16); }
+.shd-gov .shd-ico { width: 26px; height: 26px; color: var(--blue); }
+.shd-gov b { display: block; font-family: var(--display); font-weight: 500; font-size: 14px; }
+.shd-gov small { display: block; margin-top: 3px; font-size: 12px; color: var(--g7); font-weight: 300; }
+
+.shd-footer { padding: 44px 24px 36px; text-align: center; font-size: 11px; color: var(--g5); letter-spacing: .02em; font-weight: 300; }
+
+.shd-reveal { opacity: 0; transform: translateY(26px); transition: opacity .9s var(--ease), transform .9s var(--ease); }
+.shd-reveal.shd-in { opacity: 1; transform: none; }
+/* hold the card stagger until its section is actually on screen */
+.shd-reveal:not(.shd-in) .shd-card { animation-play-state: paused; }
+
+/* ═══ palette ═══ */
+.shd-scrim { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: center; padding: clamp(16px, 11vh, 120px) 16px 16px;
+  background: rgba(49,44,42,.22); backdrop-filter: blur(6px); animation: shd-fade .2s ease both; font-family: var(--text); color: var(--g8); }
+.shd-pal { width: min(660px, 100%); max-height: 72vh; display: flex; flex-direction: column; overflow: hidden; border-radius: 22px; background: #fff;
+  border: 1px solid var(--g2); box-shadow: 0 50px 100px -40px rgba(49,44,42,.7); animation: shd-rise .35s var(--ease) both; align-self: flex-start; }
+.shd-pal-in { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--g2); }
+.shd-pal-in > .shd-ico { width: 18px; height: 18px; color: var(--red); }
+.shd-pal-in input { flex: 1; min-width: 0; border: 0; outline: 0; font-family: var(--text); font-size: 16px; color: var(--g8); background: none; }
+.shd-pal-in .shd-kbd { height: 26px; font-size: 11px; }
+.shd-pal-list { overflow-y: auto; padding: 8px; }
+.shd-pal-group { padding: 10px 12px 6px; font-size: 9.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--g5); }
+.shd-res { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 0; border-radius: 12px; background: none; cursor: pointer; text-align: left; transition: background .15s ease; }
+.shd-res.shd-act { background: #fbf6f5; box-shadow: inset 2px 0 0 var(--red); }
+.shd-res .shd-tile { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--c) 9%, #fff); }
+.shd-res .shd-tile .shd-ico { width: 16px; height: 16px; color: var(--c); }
+.shd-res .shd-tt { flex: 1; min-width: 0; }
+.shd-res .shd-tt b { display: block; font-weight: 400; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shd-res .shd-tt small { display: block; font-size: 11px; color: var(--g5); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shd-res mark { background: none; color: var(--red); font-weight: 700; }
+.shd-res .shd-ent { font-size: 11px; color: var(--g5); opacity: 0; }
+.shd-res.shd-act .shd-ent { opacity: 1; }
+.shd-pal-foot { display: flex; gap: 16px; padding: 10px 18px; border-top: 1px solid var(--g2); font-size: 11px; color: var(--g5); background: #fcfbfa; }
+.shd-pal-foot span { display: inline-flex; align-items: center; gap: 6px; }
+.shd-pal-foot .shd-kbd { height: 20px; padding: 0 6px; font-size: 10px; box-shadow: none; }
+.shd-noresult { padding: 30px; text-align: center; font-size: 13px; color: var(--g7); }
+
+/* ═══ responsive ═══ */
+/* breakpoints go by the dashboard's own width, not the window's - the sidebar
+   takes 240px of it. 14" laptops land in the first band. */
+@container shd (max-width: 1120px) {
+  .shd-hero-inner { grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 20px; }
+  .shd-band { grid-template-columns: 1fr; }
+}
+@container shd (max-width: 860px) {
+  .shd-hero-inner { grid-template-columns: 1fr; }
+  .shd-copy { max-width: 720px; }
+  .shd-orbit-wrap { max-width: 560px; align-self: auto; min-height: 0; aspect-ratio: 1.2 / 1; }
+}
+@container shd (max-width: 640px) {
+  .shd-sec-head .shd-filters { align-items: flex-start; margin-top: 0; }
+  .shd-sec-head .shd-hint { text-align: left; }
+  .shd-orbit-wrap { display: none; }
+  .shd-resume-row { grid-template-columns: 1fr; }
+  .shd-topbar { display: none; }
+  .shd-hero-inner { padding-top: 28px; }
+  .shd-line2 { white-space: normal; }
+}
+
+/* Lite scene for GPU-less / reduced-motion machines. Every animation keeps
+   running; what goes is the work a CPU rasteriser pays for on each frame -
+   the rotating sweep, the big blurred glow, and backdrop blurs sitting on
+   top of a canvas that repaints 20 times a second. */
+.shd-lite .shd-sweep, .shd-lite .shd-glow { display: none; }
+.shd-lite .shd-core .shd-dash { animation: none; }
+.shd-lite .shd-chip, .shd-lite .shd-cmd-box, .shd-lite .shd-rcard,
+.shd-lite .shd-glass, .shd-lite .shd-otip { backdrop-filter: none; }
+.shd-lite .shd-cmd-box, .shd-lite .shd-rcard { background: rgba(255,255,255,.96); }

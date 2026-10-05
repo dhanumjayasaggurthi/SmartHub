@@ -1,0 +1,9 @@
+openpyxl
+pandas
+requests
+xlsxwriter
+psycopg2-binary
+pytz
+snowflake-connector-python
+cryptography
+snowflake-connector-python[pandas]

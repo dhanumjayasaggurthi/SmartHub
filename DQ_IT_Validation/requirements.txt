@@ -1,0 +1,6 @@
+snowflake-connector-python
+cryptography
+pandas
+requests
+oracledb
+paramiko

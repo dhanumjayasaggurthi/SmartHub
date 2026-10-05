@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/sh_logo_small_black.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRA-SmartHub</title>
+    <style>
+      html, body { margin: 0; }
+      .boot { min-height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #f1efed url(/background.png) center / cover no-repeat; font-family: JohnsonText, Arial, sans-serif; }
+      .boot-logo { height: 56px; width: auto; }
+      .boot-spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #e8e6e3; border-top-color: #eb1700; animation: boot-spin 0.9s linear infinite; }
+      .boot-msg { margin: 0; font-size: 14px; color: #312c2a; background: rgba(255, 255, 255, 0.85); padding: 6px 14px; border-radius: 6px; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <!-- Shown until React mounts (MSAL startup, sign-in redirect). Plain CSS so it paints instantly on cloud PCs. -->
+    <div id="root">
+      <div class="boot">
+        <img src="/sh_logo.png" alt="SmartHub" class="boot-logo" />
+        <div class="boot-spin"></div>
+        <p class="boot-msg" id="boot-msg">Loading SmartHub...</p>
+      </div>
+    </div>
+    <script>
+      if (/[#&?](code|state)=/.test(location.href)) {
+        document.getElementById('boot-msg').textContent = 'Signing you in...';
+      }
+    </script>
+    <script type="module" src="./src/main.jsx"></script>
+  </body>
+</html>
