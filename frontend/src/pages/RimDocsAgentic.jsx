@@ -22,9 +22,9 @@ const statusTone = (state) => (
 
 function citeParts(answer, citations, onOpen) {
   const byId = Object.fromEntries((citations || []).map((c) => [c.evidence_id, c]));
-  const parts = String(answer || '').split(/(\[cite:[A-Za-z0-9_.:\-]+\])/g);
+  const parts = String(answer || '').split(/(\[cite:[A-Za-z0-9_.:-]+\])/g);
   return parts.map((part, i) => {
-    const match = /^\[cite:([A-Za-z0-9_.:\-]+)\]$/.exec(part);
+    const match = /^\[cite:([A-Za-z0-9_.:-]+)\]$/.exec(part);
     if (!match) return <React.Fragment key={i}>{part}</React.Fragment>;
     const citation = byId[match[1]];
     if (!citation) return <span key={i} className="text-jj-maroon-05">{part}</span>;
