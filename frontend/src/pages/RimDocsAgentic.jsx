@@ -161,7 +161,7 @@ function AdminPanel({ onClose }) {
     } catch (e) { setError(e.message); }
   };
 
-  const useAlias = (api, table) => {
+  const selectDataApiAlias = (api, table) => {
     setKind('source'); setEditing(null); setSourceType('data_api');
     setName(`${api.name} / ${table.alias}`);
     setDescription(`Agentic RAG source backed by SmartHub Data API alias ${table.alias}.`);
@@ -235,7 +235,7 @@ function AdminPanel({ onClose }) {
               <p className="mt-1 text-xs text-jj-gray-06">Choose an existing export alias. Native semantic retrieval is used when configured; otherwise the source falls back to safe live text search.</p>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
                 {catalog.flatMap((api) => (api.tables || []).map((table) => (
-                  <button key={`${api.id}:${table.id}`} type="button" onClick={() => useAlias(api, table)}
+                  <button key={`${api.id}:${table.id}`} type="button" onClick={() => selectDataApiAlias(api, table)}
                     className="rounded-xl border border-jj-gray-03 p-3 text-left hover:border-jj-red/30">
                     <p className="text-sm font-bold text-jj-gray-08">{api.name} · {table.alias}</p>
                     <p className="mt-1 text-[11px] text-jj-gray-06">{table.source_system} · {table.database_name || 'default'} · {table.schema_name || ''}.{table.table_name}</p>
