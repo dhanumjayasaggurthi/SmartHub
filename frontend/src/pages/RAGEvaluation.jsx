@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../utils/apiClient';
 import { useRBAC } from '../context/RBACContext';
 
@@ -36,7 +36,7 @@ export default function RAGEvaluation() {
     }
   ], null, 2));
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const [p, d, r, c] = await Promise.all([
       apiJson('/rag/profiles'),
       apiJson('/rag/evaluation/datasets'),
@@ -47,11 +47,11 @@ export default function RAGEvaluation() {
     setDatasets(d.datasets || []);
     setRuns(r.runs || []);
     setCapabilities(c);
-    if (!profileId && p.profiles?.length) setProfileId(p.profiles[0].id);
-    if (!datasetId && d.datasets?.length) setDatasetId(d.datasets[0].id);
-  };
+    if (p.profiles?.length) setProfileId((current) => current || p.profiles[0].id);
+    if (d.datasets?.length) setDatasetId((current) => current || d.datasets[0].id);
+  }, []);
 
-  useEffect(() => { refresh().catch((e) => setError(e.message)); }, []);
+  useEffect(() => { refresh().catch((e) => setError(e.message)); }, [refresh]);
 
   const openRun = async (id) => {
     setError('');
@@ -90,8 +90,10 @@ export default function RAGEvaluation() {
     } catch (e) { setError(e.message); }
   };
 
-  const summaryMetrics = selectedRun?.run?.summary?.metrics || {};
-  const metricRows = useMemo(() => Object.entries(summaryMetrics), [summaryMetrics]);
+  const metricRows = useMemo(
+    () => Object.entries(selectedRun?.run?.summary?.metrics || {}),
+    [selectedRun]
+  );
 
   return (
     <div className="min-h-full bg-jj-gray-01 p-5">
