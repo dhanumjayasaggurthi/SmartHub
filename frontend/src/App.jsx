@@ -28,6 +28,7 @@ const FloatingAssistant = lazyPage(() => import("./assistant/FloatingAssistant")
 const UserManagement = lazyPage(() => import("./pages/UserManagement"));
 const DataTypeValidation = lazyPage(() => import("./pages/DataTypeValidation"));
 const RAGPage = lazyPage(() => import("./pages/RAGPage"));
+const RAGEvaluation = lazyPage(() => import("./pages/RAGEvaluation"));
 const AuditPage = lazyPage(() => import("./pages/AuditPage"));
 const Unstructured = lazyPage(() => import("./pages/Unstructured"));
 const GraDataDomains = lazyPage(() => import("./pages/GraDataDomains"));
@@ -50,6 +51,7 @@ const PREFETCH = [
   ["viewFuzzyMatch", FuzzyMatch],
   ["viewDataTypeValidation", DataTypeValidation],
   ["viewRAG", RAGPage],
+  ["viewRimDocsAgentic", RAGEvaluation],
   ["viewAIChatbot", AIchatbot],
 ];
 
@@ -304,6 +306,14 @@ const AppLayoutInner = () => {
               element={
                 <PermissionRoute permission="manageDataAPIExports">
                   <DataAPIExport />
+                </PermissionRoute>
+              }
+            />
+            <Route
+              path="/rag/evaluation"
+              element={
+                <PermissionRoute permission="viewRimDocsAgentic">
+                  <RAGEvaluation />
                 </PermissionRoute>
               }
             />
