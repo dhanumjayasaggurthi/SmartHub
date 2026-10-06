@@ -49,6 +49,7 @@ export const TOOL_CATALOG = [
     permission: 'viewRAG', colorKey: 'blue', category: 'AI',
     sections: [
       { label: 'RIMDocs Agentic', path: '/rag?tab=rimdocs-agentic', permission: 'viewRimDocsAgentic' },
+      { label: 'RAG Evaluation',  path: '/rag/evaluation',          permission: 'viewRimDocsAgentic' },
       { label: 'RIMDOCS',         path: '/rag?tab=rimdocs',         permission: 'viewRimDocsRAG' },
       { label: 'EPOD',            path: '/rag?tab=epod',            permission: 'viewEPodRAG' },
     ],

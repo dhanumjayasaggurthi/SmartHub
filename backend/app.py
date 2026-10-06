@@ -781,6 +781,13 @@ app.include_router(
 from data_api import data_api_router
 
 app.include_router(data_api_router)
+
+# Native Enterprise Agentic RAG + evaluation (additive; legacy RAG tabs remain intact).
+from rag import rag_router
+from rag_evaluation import rag_evaluation_router
+app.include_router(rag_router)
+app.include_router(rag_evaluation_router)
+
 # Optional MCP endpoint for AI agents; no-op unless DATA_API_MCP_ENABLED=1.
 from data_api_mcp import install_data_api_mcp
 install_data_api_mcp(app)
