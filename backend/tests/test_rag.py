@@ -117,3 +117,62 @@ def test_citations_resolve_only_known_evidence():
     citations = rag._citations(generated, [ev])
     assert citations[0]["evidence_id"] == "ev_good"
     assert citations[0]["source_id"] == "s1"
+
+
+def test_generation_rejects_placeholder_answer():
+    ev = evidence("ev_good")
+    generated, errors = rag._validate_generated({
+        "answer": "markdown",
+        "claims": [{"text": "Claim", "evidence_ids": ["ev_good"]}],
+        "insufficient_evidence": False,
+    }, [ev])
+    assert "placeholder_answer" in errors
+    assert generated["answer"] == "markdown"
+
+
+def test_presentation_blocks_are_grounded_in_evidence_metadata():
+    ev1 = evidence("ev_one", score=0.04)
+    ev1.title = "Document one"
+    ev1.metadata = {"row": {"category": "Safety", "study_name": "ABC-101"}}
+    ev2 = evidence("ev_two", score=0.03)
+    ev2.title = "Document two"
+    ev2.metadata = {"row": {"category": "Safety", "study_name": "ABC-101"}}
+    ev3 = evidence("ev_three", score=0.02)
+    ev3.title = "Document three"
+    ev3.metadata = {"row": {"category": "Consent", "study_name": "XYZ-202"}}
+
+    generated = {
+        "claims": [
+            {"text": "Safety evidence is available.", "evidence_ids": ["ev_one", "ev_two"]},
+            {"text": "Consent evidence is available.", "evidence_ids": ["ev_three"]},
+        ],
+        "used_evidence_ids": ["ev_one", "ev_two", "ev_three"],
+    }
+    citations = rag._citations(generated, [ev1, ev2, ev3])
+    blocks = rag._build_presentation(generated, [ev1, ev2, ev3], citations)
+
+    kpi = next(block for block in blocks if block["type"] == "kpi")
+    table = next(block for block in blocks if block["type"] == "table")
+    chart = next(block for block in blocks if block["type"] == "chart" and block["audience"] == "business")
+
+    assert {item["label"]: item["value"] for item in kpi["items"]}["Citations"] == 3
+    assert table["rows"][0]["document"] == "Document one"
+    assert chart["data"][0] == {"category": "Safety", "count": 2}
+
+
+def test_citation_has_business_and_technical_views():
+    ev = evidence("ev_good", score=0.1234)
+    ev.title = "Clinical source record"
+    ev.retrieval_method = "data_api_native"
+    ev.locator = {"api_id": "api", "alias": "documents", "row": 1}
+    ev.metadata = {"row": {"study_name": "ABC-101", "status": "Active"}}
+    generated = {
+        "claims": [{"text": "The study is active.", "evidence_ids": ["ev_good"]}],
+        "used_evidence_ids": ["ev_good"],
+    }
+
+    citation = rag._citations(generated, [ev])[0]
+    assert citation["business"]["record"]["study_name"] == "ABC-101"
+    assert citation["business"]["supports"] == ["The study is active."]
+    assert citation["technical"]["retrieval_method"] == "data_api_native"
+    assert citation["technical"]["retrieval_score"] == 0.1234
