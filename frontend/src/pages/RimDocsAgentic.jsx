@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  BarChart3, BookOpen, Check, CheckCircle2, ChevronRight, Copy, Database,
+  BarChart3, BookOpen, Check, CheckCircle2, ChevronRight, Copy,
   Download, FlaskConical, Info, MessageSquarePlus, Search, Send, Settings2,
   Square, ThumbsDown, ThumbsUp, X,
 } from 'lucide-react';
