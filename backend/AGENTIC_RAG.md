@@ -67,6 +67,24 @@ existing connector for safe live text search.
 Optional fields include `text_columns`, `columns`, `text_fields`,
 `title_field`, `id_columns`, `retrieval_mode`, and `required_permission`.
 
+For the rich answer UI, configure human-readable fields explicitly when possible:
+
+```json
+{
+  "api_id": "<data-api-id-or-slug>",
+  "alias": "documents",
+  "mode": "auto",
+  "title_field": "DOCUMENT_TITLE",
+  "id_columns": ["DOCUMENT_ID"],
+  "visual_fields": ["STUDY_NAME", "CATEGORY", "STATUS", "DOCUMENT_DATE"]
+}
+```
+
+- `title_field` is used for business-facing citation/source titles.
+- `visual_fields` (or `display_fields`) controls the bounded structured metadata available to evidence tables/charts.
+- Long document bodies, vectors, embeddings, credentials, tokens and secret-like fields are excluded from presentation metadata.
+- Charts/tables are derived deterministically from retrieved evidence metadata; the LLM does not invent independent visualization values.
+
 ### Existing JDBC/database connector source
 
 This reuses `data_validation_connectors.py`; it does not create a second connection
