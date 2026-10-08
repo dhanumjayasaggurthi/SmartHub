@@ -894,7 +894,8 @@ def _data_api(source, query, k, plan=None):
             native_mode = "hybrid"
         elif mode == "vector" and "dense" in profile.modes:
             native_mode = "dense"
-        elif mode == "text" and "sparse" in profile.modes:
+        elif (mode == "text" and (plan.get("text_mode") or "auto") in {"auto", "full_text"}
+              and "sparse" in profile.modes):
             native_mode = "sparse"
 
     if native_mode:
@@ -1410,6 +1411,7 @@ def run_rag(body, auth, callback=None, cancel=None, request_id=None):
     emit({"type": "status", "state": "analyzing"})
     standalone = _standalone(client, models["routing"], query, body.history)
     subqueries = _decompose(client, models["decomposition"], standalone) if cfg["decompose"] else [standalone]
+    emit({"type": "status", "state": "planning"})
     plans, planner_kind = _plan_retrieval(
         client, models["routing"], standalone, sources, capabilities, body
     ) if cfg.get("agentic_planning", True) else (
