@@ -478,9 +478,10 @@ function AdminPanel({ onClose }) {
     setSourceType('data_api');
     setConfig(nextKind === 'profile'
       ? JSON.stringify({
-          default: false, source_ids: [], source_only: true, decompose: false,
-          route_sources: false, rerank: true, verify: true, require_verification: true,
-          candidate_k: 20, final_k: 8, repair_attempts: 1,
+          default: false, source_ids: [], datasets: [], source_only: true, decompose: true,
+          route_sources: true, agentic_planning: true, rerank: true, verify: true,
+          require_verification: true, candidate_k: 20, final_k: 8,
+          repair_attempts: 1, retrieval_retry_attempts: 1,
         }, null, 2)
       : '{}');
     setIsActive(true);
@@ -501,6 +502,32 @@ function AdminPanel({ onClose }) {
     if (kind !== 'profile') return new Set();
     try { return new Set(JSON.parse(config || '{}').source_ids || []); } catch { return new Set(); }
   }, [kind, config]);
+
+  const selectedDatasets = useMemo(() => {
+    if (kind !== 'profile') return new Set();
+    try {
+      return new Set((JSON.parse(config || '{}').datasets || []).map((item) => {
+        if (typeof item === 'string') return item;
+        return `${item.api_id}/${item.alias}`;
+      }));
+    } catch { return new Set(); }
+  }, [kind, config]);
+
+  const toggleDataset = (apiId, alias) => {
+    try {
+      const parsed = JSON.parse(config || '{}');
+      const current = parsed.datasets || [];
+      const key = `${apiId}/${alias}`;
+      const exists = current.some((item) => (typeof item === 'string' ? item : `${item.api_id}/${item.alias}`) === key);
+      const datasets = exists
+        ? current.filter((item) => (typeof item === 'string' ? item : `${item.api_id}/${item.alias}`) !== key)
+        : [...current, { api_id: apiId, alias }];
+      setConfig(JSON.stringify({ ...parsed, datasets }, null, 2));
+      setError('');
+    } catch {
+      setError('Fix the JSON before changing dataset selection.');
+    }
+  };
 
   const toggleSource = (id) => {
     try {
@@ -562,7 +589,7 @@ function AdminPanel({ onClose }) {
               <div key={row.id} className="rounded-xl border border-jj-gray-03 bg-white p-3">
                 <button type="button" onClick={() => edit(row, kind)} className="w-full text-left">
                   <p className="text-sm font-bold text-jj-gray-08">{row.name}</p>
-                  <p className="mt-1 text-[11px] text-jj-gray-05">{kind === 'source' ? row.source_type : `${(row.config?.source_ids || []).length} sources`}</p>
+                  <p className="mt-1 text-[11px] text-jj-gray-05">{kind === 'source' ? row.source_type : `${(row.config?.source_ids || []).length + (row.config?.datasets || []).length} datasets`}</p>
                 </button>
                 <button type="button" onClick={() => remove(row, kind)} className="mt-2 text-[11px] font-bold text-jj-maroon-05">Delete</button>
               </div>
@@ -598,21 +625,48 @@ function AdminPanel({ onClose }) {
               </label>
             </div>
 
-            {kind === 'profile' && !!sources.length && (
+            {kind === 'profile' && (
               <section className="mt-6">
-                <h3 className="text-sm font-bold text-jj-gray-08">Sources</h3>
-                <p className="mt-1 text-xs text-jj-gray-05">Select sources without copying IDs manually.</p>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-jj-gray-08">Data API datasets</h3>
+                    <p className="mt-1 text-xs text-jj-gray-05">Pick an existing Data API alias. RAG discovers schema, filters, scale and retrieval capabilities automatically.</p>
+                  </div>
+                  <span className="rounded-full bg-jj-green-03/10 px-2.5 py-1 text-[10px] font-bold text-jj-green-05">Auto-discovery</span>
+                </div>
+
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  {sources.filter((s) => s.is_active !== false).map((s) => {
-                    const selected = selectedSourceIds.has(s.id);
+                  {catalog.filter((api) => api.is_active !== false).flatMap((api) => (api.tables || []).map((table) => {
+                    const key = `${api.id}/${table.alias}`;
+                    const selected = selectedDatasets.has(key);
                     return (
-                      <button key={s.id} type="button" onClick={() => toggleSource(s.id)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03'}`}>
-                        <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
-                        <span><span className="block text-sm font-bold text-jj-gray-08">{s.name}</span><span className="text-[11px] text-jj-gray-05">{s.source_type}</span></span>
+                      <button key={key} type="button" onClick={() => toggleDataset(api.id, table.alias)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03 hover:bg-jj-gray-01'}`}>
+                        <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-bold text-jj-gray-08">{api.name} / {table.alias}</span>
+                          <span className="mt-0.5 block truncate text-[11px] text-jj-gray-05">{table.source_system} · {table.database_name || 'default'} · {table.schema_name || ''}.{table.table_name}</span>
+                        </span>
                       </button>
                     );
-                  })}
+                  }))}
                 </div>
+
+                {!!sources.length && (
+                  <details className="mt-4 rounded-xl border border-jj-gray-03">
+                    <summary className="cursor-pointer px-4 py-3 text-xs font-bold text-jj-gray-06">Legacy/custom RAG sources</summary>
+                    <div className="grid gap-2 border-t border-jj-gray-03 p-3 md:grid-cols-2">
+                      {sources.filter((s) => s.is_active !== false).map((s) => {
+                        const selected = selectedSourceIds.has(s.id);
+                        return (
+                          <button key={s.id} type="button" onClick={() => toggleSource(s.id)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03'}`}>
+                            <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
+                            <span><span className="block text-sm font-bold text-jj-gray-08">{s.name}</span><span className="text-[11px] text-jj-gray-05">{s.source_type}</span></span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </details>
+                )}
               </section>
             )}
 
