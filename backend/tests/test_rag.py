@@ -176,3 +176,98 @@ def test_citation_has_business_and_technical_views():
     assert citation["business"]["supports"] == ["The study is active."]
     assert citation["technical"]["retrieval_method"] == "data_api_native"
     assert citation["technical"]["retrieval_score"] == 0.1234
+
+
+def test_profile_accepts_dynamic_data_api_dataset_reference():
+    cfg = rag._validate_profile({
+        "datasets": [{"api_id": "api-1", "alias": "documents"}],
+        "source_ids": [],
+    })
+    assert cfg["datasets"] == [{"api_id": "api-1", "alias": "documents"}]
+    assert cfg["agentic_planning"] is True
+    assert cfg["retrieval_retry_attempts"] == 1
+
+
+def test_profile_accepts_compact_dataset_reference():
+    cfg = rag._validate_profile({
+        "datasets": ["rimdocs/documents"],
+        "source_ids": [],
+    })
+    assert cfg["datasets"] == [{"api_id": "rimdocs", "alias": "documents"}]
+
+
+def test_filter_operators_are_type_aware():
+    assert "contains" in rag._filter_ops_for_kind("string")
+    assert "gt" in rag._filter_ops_for_kind("number")
+    assert "contains" not in rag._filter_ops_for_kind("number")
+    assert rag._filter_ops_for_kind("bulk") == []
+
+
+def test_plan_filter_validation_rejects_unknown_column():
+    capability = {
+        "dataset_id": "data_api:api:table",
+        "name": "RIMDocs / documents",
+        "columns": [
+            {
+                "name": "STATUS",
+                "filterable": True,
+                "filter_ops": ["eq", "ne", "in"],
+            }
+        ],
+        "limits": {"max_filters": 10},
+    }
+    with pytest.raises(HTTPException):
+        rag._validate_plan_filters(
+            [{"dataset_id": capability["dataset_id"], "column": "DOES_NOT_EXIST", "operator": "eq", "value": "A"}],
+            capability,
+        )
+
+
+def test_plan_filter_validation_accepts_typed_filter():
+    capability = {
+        "dataset_id": "data_api:api:table",
+        "name": "RIMDocs / documents",
+        "columns": [
+            {
+                "name": "STATUS",
+                "filterable": True,
+                "filter_ops": ["eq", "ne", "in"],
+            }
+        ],
+        "limits": {"max_filters": 10},
+    }
+    result = rag._validate_plan_filters(
+        [{"dataset_id": capability["dataset_id"], "column": "STATUS", "operator": "eq", "value": "Approved"}],
+        capability,
+    )
+    assert result == [{
+        "dataset_id": capability["dataset_id"],
+        "column": "STATUS",
+        "operator": "eq",
+        "value": "Approved",
+    }]
+
+
+def test_wire_filter_preserves_colons_and_lists():
+    assert rag._wire_filter({"column": "WHEN", "operator": "gte", "value": "2026-10-07T10:00:00"}) == (
+        "WHEN:gte:2026-10-07T10:00:00"
+    )
+    assert rag._wire_filter({"column": "STATUS", "operator": "in", "value": ["Approved", "Pending"]}) == (
+        "STATUS:in:Approved,Pending"
+    )
+    assert rag._wire_filter({"column": "DELETED_AT", "operator": "is_null", "value": None}) == (
+        "DELETED_AT:is_null"
+    )
+
+
+def test_search_mode_availability_uses_discovered_capabilities():
+    capability = {
+        "search": {
+            "text": {"enabled": True},
+            "vector": {"enabled": True},
+            "hybrid": {"enabled": False},
+        }
+    }
+    assert rag._requested_mode_available("text", capability)
+    assert rag._requested_mode_available("vector", capability)
+    assert not rag._requested_mode_available("hybrid", capability)
