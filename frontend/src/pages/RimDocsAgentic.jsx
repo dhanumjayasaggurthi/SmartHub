@@ -719,6 +719,50 @@ function EmptyState() {
   );
 }
 
+function RetrievalPlanSummary({ diagnostics, technical = false }) {
+  const plan = diagnostics?.stages?.retrieval_plan;
+  if (!plan?.sources?.length) return null;
+
+  return (
+    <section className={`rounded-xl border border-jj-gray-03 ${technical ? 'bg-jj-gray-08 text-white' : 'bg-jj-gray-01/60'} p-4`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className={`text-[10px] font-bold uppercase tracking-[0.12em] ${technical ? 'text-jj-gray-03' : 'text-jj-gray-05'}`}>Retrieval plan</p>
+          <p className={`mt-1 text-sm font-bold ${technical ? 'text-white' : 'text-jj-gray-08'}`}>
+            {plan.planner === 'agent' ? 'Agent-planned' : plan.planner === 'manual' ? 'User-selected' : 'Capability fallback'}
+          </p>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${technical ? 'bg-white/10 text-white' : 'bg-white text-jj-gray-06'}`}>
+          {plan.sources.length} dataset{plan.sources.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {plan.sources.map((source) => (
+          <div key={source.source_id} className={`rounded-lg border p-3 ${technical ? 'border-white/10 bg-white/5' : 'border-jj-gray-03 bg-white'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className={`text-xs font-bold uppercase ${technical ? 'text-white' : 'text-jj-gray-08'}`}>{source.mode}</span>
+              <span className={`text-[10px] ${technical ? 'text-jj-gray-03' : 'text-jj-gray-05'}`}>
+                {(source.filters || []).length} filter{(source.filters || []).length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <p className={`mt-1 line-clamp-2 text-xs leading-5 ${technical ? 'text-jj-gray-02' : 'text-jj-gray-06'}`}>{source.reason}</p>
+            {!!source.filters?.length && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {source.filters.map((filterItem, index) => (
+                  <span key={index} className={`rounded-full px-2 py-1 text-[9px] ${technical ? 'bg-white/10 text-white' : 'bg-jj-gray-01 text-jj-gray-06'}`}>
+                    {filterItem.column} {filterItem.operator} {Array.isArray(filterItem.value) ? filterItem.value.join(', ') : filterItem.value ?? ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AssistantMessage({ message, onCitation, onSources, onFeedback, onExport, onCopy, copied }) {
   const [mode, setMode] = useState('detailed');
   const [diagOpen, setDiagOpen] = useState(false);
@@ -733,13 +777,17 @@ function AssistantMessage({ message, onCitation, onSources, onFeedback, onExport
 
   const detailed = (
     <div>
-      <MarkdownAnswer answer={message.content} citations={message.citations} onCitation={onCitation} />
+      <RetrievalPlanSummary diagnostics={message.diagnostics} />
+      <div className="mt-5">
+        <MarkdownAnswer answer={message.content} citations={message.citations} onCitation={onCitation} />
+      </div>
       <PresentationBlocks blocks={blocks} mode="detailed" />
     </div>
   );
 
   const technical = (
     <div className="space-y-4">
+      <RetrievalPlanSummary diagnostics={message.diagnostics} technical />
       <PresentationBlocks blocks={blocks} mode="technical" />
       <div className="rounded-xl border border-jj-gray-03 bg-jj-gray-08 p-4">
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-white">
