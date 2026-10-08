@@ -54,11 +54,21 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class RAGFilter(BaseModel):
+    dataset_id: Optional[str] = None
+    column: str
+    operator: str = "eq"
+    value: Optional[Any] = None
+
+
 class RAGQueryRequest(BaseModel):
     query: str
     profile_id: Optional[str] = None
     history: List[ChatMessage] = Field(default_factory=list)
     source_ids: Optional[List[str]] = None
+    search_mode: Literal["auto", "text", "vector", "hybrid"] = "auto"
+    text_mode: Literal["auto", "full_text", "words", "substring", "exact"] = "auto"
+    filters: List[RAGFilter] = Field(default_factory=list)
 
 
 class SourceBody(BaseModel):
@@ -174,23 +184,94 @@ def get_profile(profile_id=None):
     return _profile(row)
 
 
+def _normalise_dataset_ref(value):
+    if isinstance(value, str):
+        if "/" not in value:
+            raise HTTPException(400, "Dataset references must be api_id/alias or {api_id,alias}.")
+        api_id, alias = value.split("/", 1)
+        value = {"api_id": api_id, "alias": alias}
+    if not isinstance(value, dict):
+        raise HTTPException(400, "Dataset references must be api_id/alias or {api_id,alias}.")
+    api_id = str(value.get("api_id") or "").strip()
+    alias = str(value.get("alias") or "").strip()
+    if not api_id or not alias:
+        raise HTTPException(400, "Dataset reference requires api_id and alias.")
+    out = {"api_id": api_id, "alias": alias}
+    permission = str(value.get("required_permission") or "").strip()
+    if permission:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,80}", permission):
+            raise HTTPException(400, "Dataset required_permission is invalid.")
+        out["required_permission"] = permission
+    return out
+
+
+def _dataset_source_id(api_id, table_id):
+    return f"data_api:{api_id}:{table_id}"
+
+
+def _dataset_source(ref):
+    ref = _normalise_dataset_ref(ref)
+    with db.transaction(read_only=True) as conn:
+        api = data_api_module._get_api(conn, ref["api_id"])
+    if not bool(api["is_active"]):
+        raise HTTPException(409, f"Data API '{ref['api_id']}' is inactive.")
+    table = data_api_module._lookup_alias(api["id"], ref["alias"])
+    if not table:
+        raise HTTPException(409, f"Data API alias '{ref['alias']}' no longer exists.")
+    return {
+        "id": _dataset_source_id(api["id"], table["id"]),
+        "name": f"{api['name']} / {table['alias']}",
+        "description": f"SmartHub Data API dataset {api['name']} / {table['alias']}.",
+        "source_type": "data_api",
+        "config": {"api_id": api["id"], "alias": table["alias"], "mode": "auto"},
+        "dataset": {"api_id": api["id"], "api_slug": api["slug"], "alias": table["alias"], "table_id": table["id"]},
+        "required_permission": ref.get("required_permission"),
+        "is_active": True,
+    }
+
+
+def _assert_dataset_refs_exist(refs):
+    for ref in refs:
+        _dataset_source(ref)
+
+
 def _profile_sources(profile, override_ids, auth):
-    allowed = list(dict.fromkeys(profile["config"].get("source_ids") or []))
+    source_ids = list(dict.fromkeys(profile["config"].get("source_ids") or []))
+    dataset_refs = profile["config"].get("datasets") or []
+    if len(source_ids) + len(dataset_refs) > MAX_SOURCES:
+        raise HTTPException(400, "This profile exceeds the configured source limit.")
+
+    persisted = []
+    if source_ids:
+        with db.transaction(read_only=True) as conn:
+            marks = ",".join("?" for _ in source_ids)
+            rows = conn.execute(
+                f"SELECT * FROM rag_sources WHERE id IN ({marks}) AND is_active=true",
+                tuple(source_ids),
+            ).fetchall()
+        by_id = {r["id"]: _source(r) for r in rows}
+        if any(x not in by_id for x in source_ids):
+            raise HTTPException(409, "This profile references a disabled or missing source.")
+        persisted = [by_id[x] for x in source_ids]
+
+    datasets = [_dataset_source(ref) for ref in dataset_refs]
+    combined = persisted + datasets
+    if not combined:
+        raise HTTPException(409, "This profile has no usable source configuration.")
+
     if override_ids is not None:
+        allowed = {s["id"] for s in combined}
         if any(x not in allowed for x in override_ids):
             raise HTTPException(403, "A requested source is outside this profile.")
-        allowed = list(dict.fromkeys(override_ids))
-    if not allowed or len(allowed) > MAX_SOURCES:
-        raise HTTPException(409 if not allowed else 400, "This profile has no usable source configuration.")
-    with db.transaction(read_only=True) as conn:
-        marks = ",".join("?" for _ in allowed)
-        rows = conn.execute(f"SELECT * FROM rag_sources WHERE id IN ({marks}) AND is_active=true", tuple(allowed)).fetchall()
-    by_id = {r["id"]: _source(r) for r in rows}
-    if any(x not in by_id for x in allowed):
-        raise HTTPException(409, "This profile references a disabled or missing source.")
+        wanted = set(dict.fromkeys(override_ids))
+        combined = [s for s in combined if s["id"] in wanted]
+
     perms = auth.get("permissions") or {}
-    visible = [by_id[x] for x in allowed if not by_id[x]["config"].get("required_permission")
-               or perms.get(by_id[x]["config"]["required_permission"]) is True]
+    visible = []
+    for source in combined:
+        required = source.get("required_permission") or source.get("config", {}).get("required_permission")
+        if not required or perms.get(required) is True:
+            visible.append(source)
     if not visible:
         raise HTTPException(403, "You do not have access to any configured source.")
     return visible
@@ -234,17 +315,51 @@ def _validate_profile(cfg):
         raise HTTPException(400, "Profile config must be an object.")
     c = dict(cfg)
     ids = c.get("source_ids") or []
-    if not isinstance(ids, list) or len(ids) > MAX_SOURCES:
-        raise HTTPException(400, "source_ids must be a bounded list.")
-    c["source_ids"] = list(dict.fromkeys(ids))
-    defaults = {"source_only": True, "decompose": True, "route_sources": True, "rerank": True,
-                "verify": True, "require_verification": True, "candidate_k": 20, "final_k": 10,
-                "rerank_threshold": RERANK_THRESHOLD, "portal_tools": [], "max_tool_calls": MAX_TOOL_CALLS,
-                "repair_attempts": 1}
+    if not isinstance(ids, list):
+        raise HTTPException(400, "source_ids must be a list.")
+    c["source_ids"] = list(dict.fromkeys(str(x) for x in ids if str(x).strip()))
+
+    datasets = c.get("datasets") or []
+    if not isinstance(datasets, list):
+        raise HTTPException(400, "datasets must be a list.")
+    normalised = []
+    seen = set()
+    for raw in datasets:
+        ref = _normalise_dataset_ref(raw)
+        key = (ref["api_id"], ref["alias"])
+        if key not in seen:
+            normalised.append(ref)
+            seen.add(key)
+    c["datasets"] = normalised
+
+    if len(c["source_ids"]) + len(c["datasets"]) > MAX_SOURCES:
+        raise HTTPException(400, f"A profile may reference at most {MAX_SOURCES} sources/datasets.")
+
+    defaults = {
+        "source_only": True,
+        "decompose": True,
+        "route_sources": True,
+        "agentic_planning": True,
+        "rerank": True,
+        "verify": True,
+        "require_verification": True,
+        "candidate_k": 20,
+        "final_k": 10,
+        "rerank_threshold": RERANK_THRESHOLD,
+        "portal_tools": [],
+        "max_tool_calls": MAX_TOOL_CALLS,
+        "repair_attempts": 1,
+        "retrieval_retry_attempts": 1,
+    }
     for key, value in defaults.items():
         c.setdefault(key, value)
-    for key, lo, hi in (("candidate_k", 1, MAX_CANDIDATES), ("final_k", 1, MAX_CONTEXT),
-                        ("max_tool_calls", 0, MAX_TOOL_CALLS), ("repair_attempts", 0, 1)):
+    for key, lo, hi in (
+        ("candidate_k", 1, MAX_CANDIDATES),
+        ("final_k", 1, MAX_CONTEXT),
+        ("max_tool_calls", 0, MAX_TOOL_CALLS),
+        ("repair_attempts", 0, 1),
+        ("retrieval_retry_attempts", 0, 1),
+    ):
         try:
             c[key] = int(c[key])
         except (TypeError, ValueError):
@@ -434,7 +549,307 @@ def _row_evidence(source, rows, method, base):
     return out
 
 
-def _live_data_api(source, table, query, k):
+def _column_kind(sql_type):
+    base = data_api_module._base_type(sql_type)
+    if any(x in base for x in ("int", "numeric", "decimal", "float", "double", "real", "money", "serial")):
+        return "number"
+    if any(x in base for x in ("date", "time")):
+        return "datetime"
+    if any(x in base for x in ("bool",)):
+        return "boolean"
+    if data_api_module._is_bulk(sql_type):
+        return "bulk"
+    return "string"
+
+
+def _filter_ops_for_kind(kind):
+    if kind == "number":
+        return ["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "is_null", "not_null"]
+    if kind == "datetime":
+        return ["eq", "ne", "gt", "gte", "lt", "lte", "is_null", "not_null"]
+    if kind == "boolean":
+        return ["eq", "ne", "is_null", "not_null"]
+    if kind == "string":
+        return ["eq", "ne", "in", "not_in", "contains", "starts_with", "is_null", "not_null"]
+    return []
+
+
+def _data_api_capability(source):
+    cfg = source["config"]
+    with db.transaction(read_only=True) as conn:
+        api = data_api_module._get_api(conn, cfg["api_id"])
+    table = data_api_module._lookup_alias(api["id"], cfg["alias"])
+    if not table:
+        raise HTTPException(409, "Configured Data API alias no longer exists.")
+
+    with data_api_module._connector(table["source_system"], table["env"], table["database_name"]) as conn:
+        meta = data_api_module._table_meta(table, conn)
+        by_type = {col["name"]: data_api_module._col_type(col) for col in meta.all_columns}
+        sortable = set(data_api_module._sortable_columns(meta, conn))
+        try:
+            vectors = data_api_module._vector_columns(table, conn, meta)
+        except Exception:
+            vectors = []
+        try:
+            estimate = conn.estimate_rows(table["database_name"], table["schema_name"], table["table_name"])
+        except Exception:
+            estimate = None
+        search_modes = ["substring"]
+        if getattr(conn, "SUPPORTS_EXACT_SEARCH", True):
+            search_modes.append("exact")
+        if getattr(conn, "SUPPORTS_WORD_SEARCH", False):
+            search_modes.append("words")
+
+    try:
+        profile = data_api_module._load_profile(table)
+    except HTTPException:
+        profile = None
+
+    columns = []
+    searchable = set(meta.searchable)
+    vector_names = {v["name"] for v in vectors}
+    for name in meta.exposed:
+        sql_type = by_type.get(name, "")
+        kind = _column_kind(sql_type)
+        columns.append({
+            "name": name,
+            "type": sql_type,
+            "kind": kind,
+            "searchable": name in searchable,
+            "sortable": name in sortable,
+            "vector": name in vector_names,
+            "filterable": kind != "bulk",
+            "filter_ops": _filter_ops_for_kind(kind),
+        })
+
+    retrieval = profile.describe() if profile else None
+    return {
+        "source_id": source["id"],
+        "dataset_id": source["id"],
+        "name": source["name"],
+        "api_id": api["id"],
+        "api_slug": api["slug"],
+        "alias": table["alias"],
+        "table_id": table["id"],
+        "source_system": table["source_system"],
+        "row_estimate": estimate,
+        "columns": columns,
+        "unique_key": list(meta.sort_key) if meta.key_is_unique else [],
+        "search": {
+            "text": {
+                "enabled": bool(meta.searchable),
+                "columns": list(meta.searchable),
+                "modes": search_modes,
+            },
+            "vector": {
+                "enabled": bool(profile and "dense" in profile.modes),
+                "columns": [v["name"] for v in vectors],
+                "mode": "dense",
+            },
+            "hybrid": {
+                "enabled": bool(profile and "hybrid" in profile.modes),
+                "mode": "hybrid",
+            },
+            "sparse": {
+                "enabled": bool(profile and "sparse" in profile.modes),
+                "mode": "sparse",
+            },
+            "default": ("hybrid" if profile and "hybrid" in profile.modes
+                        else "vector" if profile and "dense" in profile.modes
+                        else "text"),
+        },
+        "retrieval": retrieval,
+        "limits": {
+            "row_limit": min(table["row_limit"], data_api_module.MAX_ROW_LIMIT),
+            "max_filters": data_api_module.MAX_FILTERS,
+        },
+    }
+
+
+def _source_capability(source):
+    if source["source_type"] == "data_api":
+        return _data_api_capability(source)
+    return {
+        "source_id": source["id"],
+        "dataset_id": source["id"],
+        "name": source["name"],
+        "source_system": source["source_type"],
+        "columns": [],
+        "search": {
+            "text": {"enabled": True, "columns": [], "modes": ["auto"]},
+            "vector": {"enabled": False, "columns": []},
+            "hybrid": {"enabled": False},
+            "sparse": {"enabled": False},
+            "default": "text",
+        },
+        "limits": {"max_filters": 0},
+    }
+
+
+def _wire_filter(item):
+    column = str(item.get("column") or "").strip()
+    operator = str(item.get("operator") or "eq").strip().lower()
+    value = item.get("value")
+    if operator in {"is_null", "not_null"}:
+        return f"{column}:{operator}"
+    if operator in {"in", "not_in"}:
+        values = value if isinstance(value, list) else [value]
+        return f"{column}:{operator}:" + ",".join(str(v) for v in values if v is not None)
+    if isinstance(value, bool):
+        value = "true" if value else "false"
+    return f"{column}:{operator}:{'' if value is None else value}"
+
+
+def _validate_plan_filters(filters, capability):
+    by_name = {c["name"]: c for c in capability.get("columns") or []}
+    out = []
+    for raw in filters or []:
+        if hasattr(raw, "model_dump"):
+            item = raw.model_dump()
+        elif hasattr(raw, "dict"):
+            item = raw.dict()
+        else:
+            item = dict(raw)
+        dataset_id = item.get("dataset_id")
+        if dataset_id and dataset_id != capability["dataset_id"]:
+            continue
+        column = str(item.get("column") or "").strip()
+        operator = str(item.get("operator") or "eq").strip().lower()
+        column_info = by_name.get(column)
+        if not column_info or not column_info.get("filterable"):
+            raise HTTPException(400, f"Column '{column}' is not filterable on {capability['name']}.")
+        if operator not in column_info.get("filter_ops", []):
+            raise HTTPException(400, f"Filter operator '{operator}' is not valid for {column}.")
+        if operator not in {"is_null", "not_null"} and item.get("value") is None:
+            raise HTTPException(400, f"Filter '{column}:{operator}' requires a value.")
+        out.append({
+            "dataset_id": capability["dataset_id"],
+            "column": column,
+            "operator": operator,
+            "value": item.get("value"),
+        })
+    if len(out) > capability.get("limits", {}).get("max_filters", data_api_module.MAX_FILTERS):
+        raise HTTPException(400, f"Too many filters for {capability['name']}.")
+    return out
+
+
+def _requested_mode_available(mode, capability):
+    search = capability.get("search") or {}
+    return (
+        mode == "text" and search.get("text", {}).get("enabled")
+        or mode == "vector" and search.get("vector", {}).get("enabled")
+        or mode == "hybrid" and search.get("hybrid", {}).get("enabled")
+    )
+
+
+def _fallback_mode(capability):
+    search = capability.get("search") or {}
+    preferred = search.get("default")
+    if preferred in {"text", "vector", "hybrid"} and _requested_mode_available(preferred, capability):
+        return preferred
+    for mode in ("hybrid", "vector", "text"):
+        if _requested_mode_available(mode, capability):
+            return mode
+    return "text"
+
+
+def _plan_retrieval(client, model, query, sources, capabilities, body):
+    explicit = {}
+    for source in sources:
+        cap = capabilities[source["id"]]
+        explicit[source["id"]] = _validate_plan_filters(body.filters, cap)
+
+    requested = body.search_mode
+    if requested != "auto":
+        plans = []
+        for source in sources:
+            cap = capabilities[source["id"]]
+            if not _requested_mode_available(requested, cap):
+                raise HTTPException(409, f"{requested.title()} search is not available for {source['name']}.")
+            plans.append({
+                "source_id": source["id"],
+                "query": query,
+                "mode": requested,
+                "text_mode": body.text_mode,
+                "filters": explicit[source["id"]],
+                "reason": "User-selected search mode.",
+            })
+        return plans, "manual"
+
+    catalog = []
+    for source in sources:
+        cap = capabilities[source["id"]]
+        catalog.append({
+            "source_id": source["id"],
+            "name": source["name"],
+            "row_estimate": cap.get("row_estimate"),
+            "search": cap.get("search"),
+            "columns": [
+                {"name": col["name"], "kind": col["kind"], "filter_ops": col["filter_ops"]}
+                for col in (cap.get("columns") or []) if col.get("filterable")
+            ][:40],
+            "explicit_filters": explicit[source["id"]],
+        })
+
+    try:
+        planned = _json_response(client, model, [{"role": "user", "content":
+            "Plan enterprise retrieval for the question. Choose only supplied source IDs. "
+            "For each chosen source select mode text|vector|hybrid based on capabilities. "
+            "Infer a filter only when the question clearly states a value and the supplied column/operator supports it. "
+            "Never invent columns, values, or source IDs. Explicit filters must be retained. "
+            'Return {"sources":[{"source_id":"...","mode":"text|vector|hybrid","query":"...",'
+            '"filters":[{"column":"...","operator":"...","value":null}],"reason":"..."}]}. '
+            "Datasets: " + json.dumps(catalog, ensure_ascii=False) + "\nQuestion: " + query}], 1400)
+        raw_plans = planned.get("sources") or []
+    except Exception:
+        raw_plans = []
+
+    by_source = {s["id"]: s for s in sources}
+    result = []
+    for raw in raw_plans[:MAX_SOURCES]:
+        sid = str(raw.get("source_id") or "")
+        if sid not in by_source or any(x["source_id"] == sid for x in result):
+            continue
+        cap = capabilities[sid]
+        mode = str(raw.get("mode") or "").lower()
+        if mode not in {"text", "vector", "hybrid"} or not _requested_mode_available(mode, cap):
+            mode = _fallback_mode(cap)
+        inferred = []
+        for item in raw.get("filters") or []:
+            if not isinstance(item, dict):
+                continue
+            inferred.append({**item, "dataset_id": sid})
+        try:
+            validated_inferred = _validate_plan_filters(inferred, cap)
+        except HTTPException:
+            validated_inferred = []
+        merged = explicit[sid] + [
+            x for x in validated_inferred
+            if not any(e["column"] == x["column"] and e["operator"] == x["operator"] for e in explicit[sid])
+        ]
+        result.append({
+            "source_id": sid,
+            "query": " ".join(str(raw.get("query") or query).split())[:MAX_QUERY_CHARS],
+            "mode": mode,
+            "text_mode": body.text_mode,
+            "filters": merged[:cap.get("limits", {}).get("max_filters", data_api_module.MAX_FILTERS)],
+            "reason": str(raw.get("reason") or "Agent-selected retrieval plan.")[:300],
+        })
+
+    if not result:
+        result = [{
+            "source_id": s["id"],
+            "query": query,
+            "mode": _fallback_mode(capabilities[s["id"]]),
+            "text_mode": body.text_mode,
+            "filters": explicit[s["id"]],
+            "reason": "Deterministic capability fallback.",
+        } for s in sources]
+        return result, "fallback"
+    return result, "agent"
+
+
+def _live_data_api(source, table, query, k, where=None, text_mode="auto"):
     cfg = source["config"]
     with data_api_module._connector(table["source_system"], table["env"], table["database_name"]) as conn:
         meta = data_api_module._table_meta(table, conn)
@@ -446,37 +861,72 @@ def _live_data_api(source, table, query, k):
         if not text_cols:
             raise RuntimeError("No searchable text columns configured.")
         cols = [c for c in (cfg.get("columns") or exposed) if c in exposed][:40]
-        mode = cfg.get("live_search_mode") or ("words" if getattr(conn, "SUPPORTS_WORD_SEARCH", False) else "substring")
-        rows = conn.search_rows(table["database_name"], table["schema_name"], table["table_name"],
-                                cols, query, min(k, table["row_limit"]), order_by=[],
-                                search_columns=text_cols, mode=mode, filters=None)
+        requested = (text_mode or "auto").lower()
+        if requested in {"full_text", "words"} and getattr(conn, "SUPPORTS_WORD_SEARCH", False):
+            mode = "words"
+        elif requested == "exact" and getattr(conn, "SUPPORTS_EXACT_SEARCH", True):
+            mode = "exact"
+        elif requested == "substring":
+            mode = "substring"
+        else:
+            mode = "words" if getattr(conn, "SUPPORTS_WORD_SEARCH", False) else "substring"
+        filters = data_api_module._parse_filters(where or [], meta)
+        rows = conn.search_rows(
+            table["database_name"], table["schema_name"], table["table_name"],
+            cols, query, min(k, table["row_limit"]), order_by=[],
+            search_columns=text_cols, mode=mode, filters=filters or None,
+        )
     return _row_evidence(source, rows, "data_api_live_" + mode,
-                         {"api_id": cfg["api_id"], "alias": cfg["alias"]})
+                         {"api_id": cfg["api_id"], "alias": cfg["alias"], "filters": where or []})
 
 
-def _data_api(source, query, k):
+def _data_api(source, query, k, plan=None):
     cfg = source["config"]
     with db.transaction(read_only=True) as conn:
         api = data_api_module._get_api(conn, cfg["api_id"])
     table = data_api_module._lookup_alias(api["id"], cfg["alias"])
     if not table:
         raise RuntimeError("Configured Data API alias no longer exists.")
+
+    plan = plan or {"mode": "text", "text_mode": "auto", "filters": []}
+    where = [_wire_filter(item) for item in plan.get("filters") or []]
     profile = data_api_module._load_profile(table)
-    if not profile:
-        if cfg.get("mode") == "native":
-            raise RuntimeError("Semantic retrieval is not enabled for this alias.")
-        return _live_data_api(source, table, query, k)
-    body = RetrievalRequest(retrieval_queries=[
-        RetrievalQuery(query=query, k=min(k, table["row_limit"]), mode=cfg.get("retrieval_mode"))
-    ])
-    payload = data_api_module._run_retrieval(table, body, "rag:" + source["id"])
-    result = payload["results"][0]
-    rows = next(v for key, v in result.items() if key != "k")
-    out = _row_evidence(source, rows, "data_api_native", {"api_id": cfg["api_id"], "alias": cfg["alias"]})
-    for ev, row in zip(out, rows):
-        if row.get("score") is not None:
-            ev.retrieval_score = float(row["score"])
-    return out
+    mode = plan.get("mode") or "text"
+
+    native_mode = None
+    if profile:
+        if mode == "hybrid" and "hybrid" in profile.modes:
+            native_mode = "hybrid"
+        elif mode == "vector" and "dense" in profile.modes:
+            native_mode = "dense"
+        elif (mode == "text" and (plan.get("text_mode") or "auto") in {"auto", "full_text"}
+              and "sparse" in profile.modes):
+            native_mode = "sparse"
+
+    if native_mode:
+        body = RetrievalRequest(retrieval_queries=[
+            RetrievalQuery(
+                query=query,
+                k=min(k, table["row_limit"]),
+                mode=native_mode,
+                where=where,
+            )
+        ])
+        payload = data_api_module._run_retrieval(table, body, "rag:" + source["id"])
+        result = payload["results"][0]
+        rows = next(v for key, v in result.items() if key != "k")
+        out = _row_evidence(
+            source, rows, "data_api_native_" + native_mode,
+            {"api_id": cfg["api_id"], "alias": cfg["alias"], "filters": where},
+        )
+        for ev, row in zip(out, rows):
+            if row.get("score") is not None:
+                ev.retrieval_score = float(row["score"])
+        return out
+
+    if mode in {"vector", "hybrid"}:
+        raise RuntimeError(f"{mode.title()} retrieval is not enabled for this Data API alias.")
+    return _live_data_api(source, table, query, k, where=where, text_mode=plan.get("text_mode") or "auto")
 
 
 def _connector(source, query, k):
@@ -547,8 +997,10 @@ def _rest(source, query, k):
     return _row_evidence(clone, rows, "rest_api", {"endpoint": parsed.path})
 
 
-def _retrieve(source, query, k):
-    return {"data_api": _data_api, "connector": _connector, "rest": _rest}[source["source_type"]](source, query, k)
+def _retrieve(source, query, k, plan=None):
+    if source["source_type"] == "data_api":
+        return _data_api(source, query, k, plan)
+    return {"connector": _connector, "rest": _rest}[source["source_type"]](source, query, k)
 
 
 def reciprocal_rank_fusion(groups, k=60):
@@ -939,6 +1391,18 @@ def run_rag(body, auth, callback=None, cancel=None, request_id=None):
     client, models = _model_context(profile)
     cfg = profile["config"]
     diag = {"stages": {}, "warnings": [], "models": models, "profile_id": profile["id"]}
+    capabilities = {}
+    capability_errors = []
+    for source in sources:
+        try:
+            capabilities[source["id"]] = _source_capability(source)
+        except Exception as exc:
+            logger.warning("RAG capability discovery failed for %s (%s)", source["id"], type(exc).__name__)
+            capability_errors.append({"source_id": source["id"], "code": type(exc).__name__})
+            capabilities[source["id"]] = _source_capability({**source, "source_type": source["source_type"] if source["source_type"] != "data_api" else "connector"})
+    if capability_errors:
+        diag["warnings"].append(f"{len(capability_errors)} capability discovery path(s) fell back to text-only.")
+        diag["stages"]["capability_errors"] = capability_errors
 
     def emit(event):
         if callback:
@@ -952,29 +1416,113 @@ def run_rag(body, auth, callback=None, cancel=None, request_id=None):
     emit({"type": "status", "state": "analyzing"})
     standalone = _standalone(client, models["routing"], query, body.history)
     subqueries = _decompose(client, models["decomposition"], standalone) if cfg["decompose"] else [standalone]
-    if cfg["route_sources"]:
-        sources = _route(client, models["routing"], standalone, sources)
+    emit({"type": "status", "state": "planning"})
+    plans, planner_kind = _plan_retrieval(
+        client, models["routing"], standalone, sources, capabilities, body
+    ) if cfg.get("agentic_planning", True) else (
+        [{
+            "source_id": s["id"],
+            "query": standalone,
+            "mode": _fallback_mode(capabilities[s["id"]]) if body.search_mode == "auto" else body.search_mode,
+            "text_mode": body.text_mode,
+            "filters": _validate_plan_filters(body.filters, capabilities[s["id"]]),
+            "reason": "Static retrieval plan.",
+        } for s in sources],
+        "static",
+    )
+    plan_by_source = {p["source_id"]: p for p in plans}
+    sources = [s for s in sources if s["id"] in plan_by_source]
     diag["stages"]["standalone_query"], diag["stages"]["subqueries"] = standalone, subqueries
     diag["stages"]["sources"] = [{"id": s["id"], "name": s["name"], "type": s["source_type"]} for s in sources]
+    diag["stages"]["retrieval_plan"] = {
+        "planner": planner_kind,
+        "sources": plans,
+        "capabilities": {
+            sid: {
+                "name": cap.get("name"),
+                "row_estimate": cap.get("row_estimate"),
+                "search": cap.get("search"),
+                "unique_key": cap.get("unique_key"),
+            } for sid, cap in capabilities.items()
+        },
+    }
+    emit({"type": "plan", "planner": planner_kind, "sources": plans})
     emit({"type": "status", "state": "retrieving", "sources": diag["stages"]["sources"]})
 
     groups, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, min(MAX_CONCURRENCY, len(sources) * len(subqueries)))) as pool:
-        jobs = {pool.submit(_retrieve, s, q, cfg["candidate_k"]): (s, q) for s in sources for q in subqueries}
+        jobs = {}
+        for source in sources:
+            plan = plan_by_source[source["id"]]
+            for q in subqueries:
+                retrieval_query = q if len(subqueries) > 1 else (plan.get("query") or q)
+                jobs[pool.submit(_retrieve, source, retrieval_query, cfg["candidate_k"], plan)] = (source, retrieval_query, plan)
         for future in as_completed(jobs):
             check()
-            source, q = jobs[future]
+            source, q, plan = jobs[future]
             try:
                 rows = future.result()
                 if rows:
                     groups.append(rows)
-                emit({"type": "source", "source_id": source["id"], "source_name": source["name"], "query": q, "count": len(rows)})
+                emit({"type": "source", "source_id": source["id"], "source_name": source["name"], "query": q, "count": len(rows),
+                      "mode": plan.get("mode"), "filters": plan.get("filters") or []})
             except Exception as exc:
                 logger.warning("RAG source %s failed (%s)", source["id"], type(exc).__name__)
                 errors.append({"source_id": source["id"], "source_name": source["name"], "code": type(exc).__name__})
     if errors:
         diag["warnings"].append(f"{len(errors)} retrieval path(s) were unavailable.")
         diag["stages"]["source_errors"] = errors
+
+    if not groups and cfg.get("retrieval_retry_attempts", 0):
+        fallback_jobs = []
+        for source in sources:
+            plan = plan_by_source[source["id"]]
+            cap = capabilities[source["id"]]
+            if plan.get("mode") != "text" and cap.get("search", {}).get("text", {}).get("enabled"):
+                fallback_jobs.append((source, {
+                    **plan,
+                    "mode": "text",
+                    "text_mode": "auto",
+                    "reason": "Bounded fallback after the primary retrieval plan returned no evidence.",
+                }))
+        if fallback_jobs:
+            emit({"type": "status", "state": "retrieving"})
+            diag["stages"]["retrieval_retry"] = []
+            with ThreadPoolExecutor(max_workers=max(1, min(MAX_CONCURRENCY, len(fallback_jobs)))) as pool:
+                jobs = {
+                    pool.submit(_retrieve, source, standalone, cfg["candidate_k"], fallback_plan):
+                    (source, fallback_plan)
+                    for source, fallback_plan in fallback_jobs
+                }
+                for future in as_completed(jobs):
+                    check()
+                    source, fallback_plan = jobs[future]
+                    try:
+                        rows = future.result()
+                        if rows:
+                            groups.append(rows)
+                        diag["stages"]["retrieval_retry"].append({
+                            "source_id": source["id"],
+                            "mode": "text",
+                            "count": len(rows),
+                        })
+                        emit({
+                            "type": "source",
+                            "source_id": source["id"],
+                            "source_name": source["name"],
+                            "query": standalone,
+                            "count": len(rows),
+                            "mode": "text",
+                            "filters": fallback_plan.get("filters") or [],
+                            "fallback": True,
+                        })
+                    except Exception as exc:
+                        logger.warning("RAG fallback source %s failed (%s)", source["id"], type(exc).__name__)
+                        diag["stages"]["retrieval_retry"].append({
+                            "source_id": source["id"],
+                            "mode": "text",
+                            "error": type(exc).__name__,
+                        })
 
     try:
         tool_evidence = _portal_tools(client, models["routing"], standalone, profile, auth)
@@ -1045,6 +1593,28 @@ def _sse(event):
     event = dict(event)
     kind = event.pop("type", "message")
     return f"event: {kind}\ndata: {json.dumps(event, ensure_ascii=False, default=str)}\n\n".encode()
+
+
+@rag_router.get("/capabilities")
+def capabilities(profile_id: Optional[str] = None,
+                 auth: dict = Depends(require_permission("viewRimDocsAgentic"))):
+    profile = get_profile(profile_id)
+    sources = _profile_sources(profile, None, auth)
+    datasets = []
+    errors = []
+    for source in sources:
+        try:
+            datasets.append(_source_capability(source))
+        except Exception as exc:
+            logger.warning("RAG capability endpoint failed for %s (%s)", source["id"], type(exc).__name__)
+            errors.append({"source_id": source["id"], "name": source["name"], "code": type(exc).__name__})
+    return {
+        "profile": {"id": profile["id"], "name": profile["name"]},
+        "datasets": datasets,
+        "search_modes": ["auto", "text", "vector", "hybrid"],
+        "text_modes": ["auto", "full_text", "words", "substring", "exact"],
+        "errors": errors,
+    }
 
 
 @rag_router.get("/profiles")
@@ -1179,6 +1749,7 @@ def create_profile(body: ProfileBody, request: Request,
     cfg, actor, pid = _validate_profile(body.config), _actor(auth), str(uuid.uuid4())
     if any(x not in {s["id"] for s in load_sources(False)} for x in cfg["source_ids"]):
         raise HTTPException(400, "Profile references unknown sources.")
+    _assert_dataset_refs_exist(cfg.get("datasets") or [])
     try:
         with db.transaction() as conn:
             conn.execute("INSERT INTO rag_profiles (id,name,description,config,is_active,created_by,created_at,updated_by,updated_at) VALUES (?,?,?,?,?,?,now(),?,now())",

@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   BarChart3, BookOpen, Check, CheckCircle2, ChevronRight, Copy,
-  Download, FlaskConical, Info, MessageSquarePlus, Search, Send, Settings2,
+  Download, Filter, FlaskConical, Info, MessageSquarePlus, Search, Send, Settings2,
   Square, ThumbsDown, ThumbsUp, X,
 } from 'lucide-react';
 import {
@@ -16,6 +16,7 @@ import { useRBAC } from '../context/RBACContext';
 
 const STAGES = {
   analyzing: 'Understanding your question',
+  planning: 'Planning retrieval strategy',
   routing: 'Selecting relevant sources',
   retrieving: 'Searching approved sources',
   reranking: 'Prioritizing the best evidence',
@@ -319,6 +320,130 @@ function SourcesDrawer({ items, onClose, onOpenCitation }) {
   );
 }
 
+const FILTER_LABELS = {
+  eq: 'equals',
+  ne: 'not equal',
+  gt: 'greater than',
+  gte: 'greater than or equal',
+  lt: 'less than',
+  lte: 'less than or equal',
+  in: 'one of',
+  not_in: 'not one of',
+  contains: 'contains',
+  starts_with: 'starts with',
+  is_null: 'is empty',
+  not_null: 'is not empty',
+};
+
+function FilterBuilder({ capabilities, filters, onChange, disabled }) {
+  const datasets = capabilities?.datasets || [];
+  const [open, setOpen] = useState(false);
+  const [datasetId, setDatasetId] = useState('');
+  const [column, setColumn] = useState('');
+  const [operator, setOperator] = useState('eq');
+  const [value, setValue] = useState('');
+
+  useEffect(() => {
+    if (!datasets.length) {
+      setDatasetId('');
+      return;
+    }
+    if (!datasets.some((d) => d.dataset_id === datasetId)) {
+      setDatasetId(datasets[0].dataset_id);
+      setColumn('');
+    }
+  }, [datasets, datasetId]);
+
+  const dataset = datasets.find((d) => d.dataset_id === datasetId);
+  const columns = (dataset?.columns || []).filter((item) => item.filterable);
+  const selectedColumn = columns.find((item) => item.name === column);
+  const operators = selectedColumn?.filter_ops || [];
+
+  useEffect(() => {
+    if (operators.length && !operators.includes(operator)) setOperator(operators[0]);
+  }, [operators, operator]);
+
+  const add = () => {
+    if (!datasetId || !column || !operator) return;
+    if (!['is_null', 'not_null'].includes(operator) && !String(value).trim()) return;
+    const finalValue = ['in', 'not_in'].includes(operator)
+      ? String(value).split(',').map((item) => item.trim()).filter(Boolean)
+      : ['is_null', 'not_null'].includes(operator) ? null : value;
+    onChange([...filters, { dataset_id: datasetId, column, operator, value: finalValue }]);
+    setValue('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        disabled={disabled || !datasets.length}
+        className="inline-flex items-center gap-2 rounded-lg border border-jj-gray-03 bg-white px-3 py-2 text-xs font-bold text-jj-gray-06 hover:bg-jj-gray-01 disabled:opacity-40"
+      >
+        <Filter className="h-3.5 w-3.5" />
+        Filters
+        {!!filters.length && <span className="rounded-full bg-jj-red/10 px-1.5 py-0.5 text-[10px] text-jj-red">{filters.length}</span>}
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-50 mb-2 w-[min(92vw,620px)] rounded-xl border border-jj-gray-03 bg-white p-4 shadow-2xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-jj-gray-08">Add dataset filter</p>
+              <p className="mt-0.5 text-[11px] text-jj-gray-05">Columns and operators come from live Data API schema metadata.</p>
+            </div>
+            <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 hover:bg-jj-gray-01"><X className="h-4 w-4" /></button>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <label className="text-[11px] font-bold text-jj-gray-06">Dataset
+              <select value={datasetId} onChange={(e) => { setDatasetId(e.target.value); setColumn(''); }} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal">
+                {datasets.map((datasetItem) => <option key={datasetItem.dataset_id} value={datasetItem.dataset_id}>{datasetItem.name}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Column
+              <select value={column} onChange={(e) => setColumn(e.target.value)} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal">
+                <option value="">Choose column</option>
+                {columns.map((columnItem) => <option key={columnItem.name} value={columnItem.name}>{columnItem.name} · {columnItem.kind}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Operator
+              <select value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!column} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01">
+                {operators.map((op) => <option key={op} value={op}>{FILTER_LABELS[op] || op}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Value
+              {selectedColumn?.kind === 'boolean' ? (
+                <select value={value} onChange={(e) => setValue(e.target.value)} disabled={['is_null', 'not_null'].includes(operator)} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01">
+                  <option value="">Choose</option><option value="true">true</option><option value="false">false</option>
+                </select>
+              ) : (
+                <input
+                  type={selectedColumn?.kind === 'number' ? 'number' : 'text'}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  disabled={['is_null', 'not_null'].includes(operator)}
+                  placeholder={['in', 'not_in'].includes(operator) ? 'Comma-separated values' : selectedColumn?.kind === 'datetime' ? '2026-10-07 or timestamp' : 'Value'}
+                  className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01"
+                />
+              )}
+            </label>
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <button type="button" onClick={add} disabled={!column || (!['is_null', 'not_null'].includes(operator) && !String(value).trim())} className="rounded-lg bg-jj-gray-08 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">Add filter</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminPanel({ onClose }) {
   const [sources, setSources] = useState([]);
   const [profiles, setProfiles] = useState([]);
@@ -353,9 +478,10 @@ function AdminPanel({ onClose }) {
     setSourceType('data_api');
     setConfig(nextKind === 'profile'
       ? JSON.stringify({
-          default: false, source_ids: [], source_only: true, decompose: false,
-          route_sources: false, rerank: true, verify: true, require_verification: true,
-          candidate_k: 20, final_k: 8, repair_attempts: 1,
+          default: false, source_ids: [], datasets: [], source_only: true, decompose: true,
+          route_sources: true, agentic_planning: true, rerank: true, verify: true,
+          require_verification: true, candidate_k: 20, final_k: 8,
+          repair_attempts: 1, retrieval_retry_attempts: 1,
         }, null, 2)
       : '{}');
     setIsActive(true);
@@ -376,6 +502,32 @@ function AdminPanel({ onClose }) {
     if (kind !== 'profile') return new Set();
     try { return new Set(JSON.parse(config || '{}').source_ids || []); } catch { return new Set(); }
   }, [kind, config]);
+
+  const selectedDatasets = useMemo(() => {
+    if (kind !== 'profile') return new Set();
+    try {
+      return new Set((JSON.parse(config || '{}').datasets || []).map((item) => {
+        if (typeof item === 'string') return item;
+        return `${item.api_id}/${item.alias}`;
+      }));
+    } catch { return new Set(); }
+  }, [kind, config]);
+
+  const toggleDataset = (apiId, alias) => {
+    try {
+      const parsed = JSON.parse(config || '{}');
+      const current = parsed.datasets || [];
+      const key = `${apiId}/${alias}`;
+      const exists = current.some((item) => (typeof item === 'string' ? item : `${item.api_id}/${item.alias}`) === key);
+      const datasets = exists
+        ? current.filter((item) => (typeof item === 'string' ? item : `${item.api_id}/${item.alias}`) !== key)
+        : [...current, { api_id: apiId, alias }];
+      setConfig(JSON.stringify({ ...parsed, datasets }, null, 2));
+      setError('');
+    } catch {
+      setError('Fix the JSON before changing dataset selection.');
+    }
+  };
 
   const toggleSource = (id) => {
     try {
@@ -437,7 +589,7 @@ function AdminPanel({ onClose }) {
               <div key={row.id} className="rounded-xl border border-jj-gray-03 bg-white p-3">
                 <button type="button" onClick={() => edit(row, kind)} className="w-full text-left">
                   <p className="text-sm font-bold text-jj-gray-08">{row.name}</p>
-                  <p className="mt-1 text-[11px] text-jj-gray-05">{kind === 'source' ? row.source_type : `${(row.config?.source_ids || []).length} sources`}</p>
+                  <p className="mt-1 text-[11px] text-jj-gray-05">{kind === 'source' ? row.source_type : `${(row.config?.source_ids || []).length + (row.config?.datasets || []).length} datasets`}</p>
                 </button>
                 <button type="button" onClick={() => remove(row, kind)} className="mt-2 text-[11px] font-bold text-jj-maroon-05">Delete</button>
               </div>
@@ -473,21 +625,48 @@ function AdminPanel({ onClose }) {
               </label>
             </div>
 
-            {kind === 'profile' && !!sources.length && (
+            {kind === 'profile' && (
               <section className="mt-6">
-                <h3 className="text-sm font-bold text-jj-gray-08">Sources</h3>
-                <p className="mt-1 text-xs text-jj-gray-05">Select sources without copying IDs manually.</p>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-jj-gray-08">Data API datasets</h3>
+                    <p className="mt-1 text-xs text-jj-gray-05">Pick an existing Data API alias. RAG discovers schema, filters, scale and retrieval capabilities automatically.</p>
+                  </div>
+                  <span className="rounded-full bg-jj-green-03/10 px-2.5 py-1 text-[10px] font-bold text-jj-green-05">Auto-discovery</span>
+                </div>
+
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  {sources.filter((s) => s.is_active !== false).map((s) => {
-                    const selected = selectedSourceIds.has(s.id);
+                  {catalog.filter((api) => api.is_active !== false).flatMap((api) => (api.tables || []).map((table) => {
+                    const key = `${api.id}/${table.alias}`;
+                    const selected = selectedDatasets.has(key);
                     return (
-                      <button key={s.id} type="button" onClick={() => toggleSource(s.id)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03'}`}>
-                        <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
-                        <span><span className="block text-sm font-bold text-jj-gray-08">{s.name}</span><span className="text-[11px] text-jj-gray-05">{s.source_type}</span></span>
+                      <button key={key} type="button" onClick={() => toggleDataset(api.id, table.alias)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03 hover:bg-jj-gray-01'}`}>
+                        <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-bold text-jj-gray-08">{api.name} / {table.alias}</span>
+                          <span className="mt-0.5 block truncate text-[11px] text-jj-gray-05">{table.source_system} · {table.database_name || 'default'} · {table.schema_name || ''}.{table.table_name}</span>
+                        </span>
                       </button>
                     );
-                  })}
+                  }))}
                 </div>
+
+                {!!sources.length && (
+                  <details className="mt-4 rounded-xl border border-jj-gray-03">
+                    <summary className="cursor-pointer px-4 py-3 text-xs font-bold text-jj-gray-06">Legacy/custom RAG sources</summary>
+                    <div className="grid gap-2 border-t border-jj-gray-03 p-3 md:grid-cols-2">
+                      {sources.filter((s) => s.is_active !== false).map((s) => {
+                        const selected = selectedSourceIds.has(s.id);
+                        return (
+                          <button key={s.id} type="button" onClick={() => toggleSource(s.id)} className={`flex items-start gap-3 rounded-xl border p-3 text-left ${selected ? 'border-jj-red/30 bg-jj-red/5' : 'border-jj-gray-03'}`}>
+                            <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${selected ? 'border-jj-red bg-jj-red text-white' : 'border-jj-gray-04'}`}>{selected && <Check className="h-3.5 w-3.5" />}</span>
+                            <span><span className="block text-sm font-bold text-jj-gray-08">{s.name}</span><span className="text-[11px] text-jj-gray-05">{s.source_type}</span></span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </details>
+                )}
               </section>
             )}
 
@@ -540,6 +719,50 @@ function EmptyState() {
   );
 }
 
+function RetrievalPlanSummary({ diagnostics, technical = false }) {
+  const plan = diagnostics?.stages?.retrieval_plan;
+  if (!plan?.sources?.length) return null;
+
+  return (
+    <section className={`rounded-xl border border-jj-gray-03 ${technical ? 'bg-jj-gray-08 text-white' : 'bg-jj-gray-01/60'} p-4`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className={`text-[10px] font-bold uppercase tracking-[0.12em] ${technical ? 'text-jj-gray-03' : 'text-jj-gray-05'}`}>Retrieval plan</p>
+          <p className={`mt-1 text-sm font-bold ${technical ? 'text-white' : 'text-jj-gray-08'}`}>
+            {plan.planner === 'agent' ? 'Agent-planned' : plan.planner === 'manual' ? 'User-selected' : 'Capability fallback'}
+          </p>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${technical ? 'bg-white/10 text-white' : 'bg-white text-jj-gray-06'}`}>
+          {plan.sources.length} dataset{plan.sources.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {plan.sources.map((source) => (
+          <div key={source.source_id} className={`rounded-lg border p-3 ${technical ? 'border-white/10 bg-white/5' : 'border-jj-gray-03 bg-white'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className={`text-xs font-bold uppercase ${technical ? 'text-white' : 'text-jj-gray-08'}`}>{source.mode}</span>
+              <span className={`text-[10px] ${technical ? 'text-jj-gray-03' : 'text-jj-gray-05'}`}>
+                {(source.filters || []).length} filter{(source.filters || []).length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <p className={`mt-1 line-clamp-2 text-xs leading-5 ${technical ? 'text-jj-gray-02' : 'text-jj-gray-06'}`}>{source.reason}</p>
+            {!!source.filters?.length && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {source.filters.map((filterItem, index) => (
+                  <span key={index} className={`rounded-full px-2 py-1 text-[9px] ${technical ? 'bg-white/10 text-white' : 'bg-jj-gray-01 text-jj-gray-06'}`}>
+                    {filterItem.column} {filterItem.operator} {Array.isArray(filterItem.value) ? filterItem.value.join(', ') : filterItem.value ?? ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AssistantMessage({ message, onCitation, onSources, onFeedback, onExport, onCopy, copied }) {
   const [mode, setMode] = useState('detailed');
   const [diagOpen, setDiagOpen] = useState(false);
@@ -554,13 +777,17 @@ function AssistantMessage({ message, onCitation, onSources, onFeedback, onExport
 
   const detailed = (
     <div>
-      <MarkdownAnswer answer={message.content} citations={message.citations} onCitation={onCitation} />
+      <RetrievalPlanSummary diagnostics={message.diagnostics} />
+      <div className="mt-5">
+        <MarkdownAnswer answer={message.content} citations={message.citations} onCitation={onCitation} />
+      </div>
       <PresentationBlocks blocks={blocks} mode="detailed" />
     </div>
   );
 
   const technical = (
     <div className="space-y-4">
+      <RetrievalPlanSummary diagnostics={message.diagnostics} technical />
       <PresentationBlocks blocks={blocks} mode="technical" />
       <div className="rounded-xl border border-jj-gray-03 bg-jj-gray-08 p-4">
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-white">
@@ -629,6 +856,10 @@ export default function RimDocsAgentic() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [error, setError] = useState('');
   const [copiedId, setCopiedId] = useState(null);
+  const [capabilities, setCapabilities] = useState(null);
+  const [searchMode, setSearchMode] = useState('auto');
+  const [textMode, setTextMode] = useState('auto');
+  const [filters, setFilters] = useState([]);
 
   const streamRef = useRef(null);
   const bottomRef = useRef(null);
@@ -642,9 +873,32 @@ export default function RimDocsAgentic() {
     }).catch((e) => setError(e.message));
   }, [nativeEnabled]);
 
+  useEffect(() => {
+    setFilters([]);
+    setSearchMode('auto');
+    setTextMode('auto');
+    setCapabilities(null);
+    if (!nativeEnabled || !profileId) return;
+    apiJson(`/rag/capabilities?profile_id=${encodeURIComponent(profileId)}`)
+      .then(setCapabilities)
+      .catch((e) => setError(e.message));
+  }, [nativeEnabled, profileId]);
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, running, stage]);
 
   const history = useMemo(() => messages.slice(-12).map((m) => ({ role: m.role, content: m.content })), [messages]);
+
+  const modeAvailable = (mode) => {
+    if (mode === 'auto') return true;
+    const datasets = capabilities?.datasets || [];
+    if (!datasets.length) return false;
+    return datasets.every((dataset) => {
+      if (mode === 'text') return dataset.search?.text?.enabled;
+      if (mode === 'vector') return dataset.search?.vector?.enabled;
+      if (mode === 'hybrid') return dataset.search?.hybrid?.enabled;
+      return false;
+    });
+  };
 
   if (!nativeEnabled) return <LegacyFallback />;
 
@@ -669,7 +923,14 @@ export default function RimDocsAgentic() {
 
     const es = apiEventSource('/rag/query/stream', {
       method: 'POST',
-      body: { query: text, profile_id: profileId, history },
+      body: {
+        query: text,
+        profile_id: profileId,
+        history,
+        search_mode: searchMode,
+        text_mode: textMode,
+        filters,
+      },
     });
     streamRef.current = es;
 
@@ -828,6 +1089,65 @@ export default function RimDocsAgentic() {
 
       <footer className="shrink-0 border-t border-jj-gray-03 bg-white px-4 py-4 md:px-6">
         <div className="mx-auto max-w-5xl">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-[10px] font-bold uppercase tracking-wide text-jj-gray-05">Search</span>
+
+            {[
+              ['auto', 'Auto'],
+              ['text', 'Text'],
+              ['vector', 'Vector'],
+              ['hybrid', 'Hybrid'],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSearchMode(id)}
+                disabled={running || !modeAvailable(id)}
+                title={!modeAvailable(id) ? `${label} is not available on every dataset in this profile` : ''}
+                className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition disabled:cursor-not-allowed disabled:opacity-35 ${searchMode === id ? 'border-jj-gray-08 bg-jj-gray-08 text-white' : 'border-jj-gray-03 bg-white text-jj-gray-06 hover:bg-jj-gray-01'}`}
+              >
+                {label}
+              </button>
+            ))}
+
+            {searchMode === 'text' && (
+              <select
+                value={textMode}
+                onChange={(e) => setTextMode(e.target.value)}
+                disabled={running}
+                className="rounded-lg border border-jj-gray-03 bg-white px-2.5 py-1.5 text-[11px] text-jj-gray-06"
+              >
+                <option value="auto">Text: Auto</option>
+                <option value="full_text">Full-text indexed</option>
+                <option value="words">Words</option>
+                <option value="exact">Exact</option>
+                <option value="substring">Substring</option>
+              </select>
+            )}
+
+            <FilterBuilder capabilities={capabilities} filters={filters} onChange={setFilters} disabled={running} />
+
+            {!!filters.length && (
+              <div className="flex flex-wrap gap-1">
+                {filters.map((filterItem, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => !running && setFilters((previous) => previous.filter((_, itemIndex) => itemIndex !== index))}
+                    className="rounded-full bg-jj-gray-01 px-2 py-1 text-[10px] text-jj-gray-06 hover:bg-jj-gray-02"
+                    title="Remove filter"
+                  >
+                    {filterItem.column} {FILTER_LABELS[filterItem.operator] || filterItem.operator} {Array.isArray(filterItem.value) ? filterItem.value.join(', ') : filterItem.value ?? ''} ×
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <span className="ml-auto text-[10px] text-jj-gray-05">
+              {(capabilities?.datasets || []).length} dataset{(capabilities?.datasets || []).length === 1 ? '' : 's'}
+            </span>
+          </div>
+
           <div className="flex items-end gap-2 rounded-2xl border border-jj-gray-03 p-2 shadow-sm focus-within:border-jj-red/25 focus-within:ring-2 focus-within:ring-jj-red/10">
             <textarea
               value={query}
@@ -842,7 +1162,7 @@ export default function RimDocsAgentic() {
               ? <button type="button" onClick={stop} className="inline-flex h-11 items-center gap-2 rounded-xl border border-jj-maroon-05/30 px-4 text-sm font-bold text-jj-maroon-05"><Square className="h-3.5 w-3.5 fill-current" />Stop</button>
               : <button type="button" onClick={ask} disabled={!query.trim() || !profileId} className="inline-flex h-11 items-center gap-2 rounded-xl bg-jj-red px-4 text-sm font-bold text-white disabled:opacity-40"><Send className="h-4 w-4" />Ask</button>}
           </div>
-          <p className="mt-2 text-center text-[10px] text-jj-gray-05">Grounded narrative + validated business visuals + technical lineage.</p>
+          <p className="mt-2 text-center text-[10px] text-jj-gray-05">Auto-planned retrieval · schema-validated filters · grounded narrative · technical lineage.</p>
         </div>
       </footer>
 
