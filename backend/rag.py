@@ -54,11 +54,21 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class RAGFilter(BaseModel):
+    dataset_id: Optional[str] = None
+    column: str
+    operator: str = "eq"
+    value: Optional[Any] = None
+
+
 class RAGQueryRequest(BaseModel):
     query: str
     profile_id: Optional[str] = None
     history: List[ChatMessage] = Field(default_factory=list)
     source_ids: Optional[List[str]] = None
+    search_mode: Literal["auto", "text", "vector", "hybrid"] = "auto"
+    text_mode: Literal["auto", "full_text", "words", "substring", "exact"] = "auto"
+    filters: List[RAGFilter] = Field(default_factory=list)
 
 
 class SourceBody(BaseModel):
@@ -174,23 +184,94 @@ def get_profile(profile_id=None):
     return _profile(row)
 
 
+def _normalise_dataset_ref(value):
+    if isinstance(value, str):
+        if "/" not in value:
+            raise HTTPException(400, "Dataset references must be api_id/alias or {api_id,alias}.")
+        api_id, alias = value.split("/", 1)
+        value = {"api_id": api_id, "alias": alias}
+    if not isinstance(value, dict):
+        raise HTTPException(400, "Dataset references must be api_id/alias or {api_id,alias}.")
+    api_id = str(value.get("api_id") or "").strip()
+    alias = str(value.get("alias") or "").strip()
+    if not api_id or not alias:
+        raise HTTPException(400, "Dataset reference requires api_id and alias.")
+    out = {"api_id": api_id, "alias": alias}
+    permission = str(value.get("required_permission") or "").strip()
+    if permission:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,80}", permission):
+            raise HTTPException(400, "Dataset required_permission is invalid.")
+        out["required_permission"] = permission
+    return out
+
+
+def _dataset_source_id(api_id, table_id):
+    return f"data_api:{api_id}:{table_id}"
+
+
+def _dataset_source(ref):
+    ref = _normalise_dataset_ref(ref)
+    with db.transaction(read_only=True) as conn:
+        api = data_api_module._get_api(conn, ref["api_id"])
+    if not bool(api["is_active"]):
+        raise HTTPException(409, f"Data API '{ref['api_id']}' is inactive.")
+    table = data_api_module._lookup_alias(api["id"], ref["alias"])
+    if not table:
+        raise HTTPException(409, f"Data API alias '{ref['alias']}' no longer exists.")
+    return {
+        "id": _dataset_source_id(api["id"], table["id"]),
+        "name": f"{api['name']} / {table['alias']}",
+        "description": f"SmartHub Data API dataset {api['name']} / {table['alias']}.",
+        "source_type": "data_api",
+        "config": {"api_id": api["id"], "alias": table["alias"], "mode": "auto"},
+        "dataset": {"api_id": api["id"], "api_slug": api["slug"], "alias": table["alias"], "table_id": table["id"]},
+        "required_permission": ref.get("required_permission"),
+        "is_active": True,
+    }
+
+
+def _assert_dataset_refs_exist(refs):
+    for ref in refs:
+        _dataset_source(ref)
+
+
 def _profile_sources(profile, override_ids, auth):
-    allowed = list(dict.fromkeys(profile["config"].get("source_ids") or []))
+    source_ids = list(dict.fromkeys(profile["config"].get("source_ids") or []))
+    dataset_refs = profile["config"].get("datasets") or []
+    if len(source_ids) + len(dataset_refs) > MAX_SOURCES:
+        raise HTTPException(400, "This profile exceeds the configured source limit.")
+
+    persisted = []
+    if source_ids:
+        with db.transaction(read_only=True) as conn:
+            marks = ",".join("?" for _ in source_ids)
+            rows = conn.execute(
+                f"SELECT * FROM rag_sources WHERE id IN ({marks}) AND is_active=true",
+                tuple(source_ids),
+            ).fetchall()
+        by_id = {r["id"]: _source(r) for r in rows}
+        if any(x not in by_id for x in source_ids):
+            raise HTTPException(409, "This profile references a disabled or missing source.")
+        persisted = [by_id[x] for x in source_ids]
+
+    datasets = [_dataset_source(ref) for ref in dataset_refs]
+    combined = persisted + datasets
+    if not combined:
+        raise HTTPException(409, "This profile has no usable source configuration.")
+
     if override_ids is not None:
+        allowed = {s["id"] for s in combined}
         if any(x not in allowed for x in override_ids):
             raise HTTPException(403, "A requested source is outside this profile.")
-        allowed = list(dict.fromkeys(override_ids))
-    if not allowed or len(allowed) > MAX_SOURCES:
-        raise HTTPException(409 if not allowed else 400, "This profile has no usable source configuration.")
-    with db.transaction(read_only=True) as conn:
-        marks = ",".join("?" for _ in allowed)
-        rows = conn.execute(f"SELECT * FROM rag_sources WHERE id IN ({marks}) AND is_active=true", tuple(allowed)).fetchall()
-    by_id = {r["id"]: _source(r) for r in rows}
-    if any(x not in by_id for x in allowed):
-        raise HTTPException(409, "This profile references a disabled or missing source.")
+        wanted = set(dict.fromkeys(override_ids))
+        combined = [s for s in combined if s["id"] in wanted]
+
     perms = auth.get("permissions") or {}
-    visible = [by_id[x] for x in allowed if not by_id[x]["config"].get("required_permission")
-               or perms.get(by_id[x]["config"]["required_permission"]) is True]
+    visible = []
+    for source in combined:
+        required = source.get("required_permission") or source.get("config", {}).get("required_permission")
+        if not required or perms.get(required) is True:
+            visible.append(source)
     if not visible:
         raise HTTPException(403, "You do not have access to any configured source.")
     return visible
@@ -234,17 +315,51 @@ def _validate_profile(cfg):
         raise HTTPException(400, "Profile config must be an object.")
     c = dict(cfg)
     ids = c.get("source_ids") or []
-    if not isinstance(ids, list) or len(ids) > MAX_SOURCES:
-        raise HTTPException(400, "source_ids must be a bounded list.")
-    c["source_ids"] = list(dict.fromkeys(ids))
-    defaults = {"source_only": True, "decompose": True, "route_sources": True, "rerank": True,
-                "verify": True, "require_verification": True, "candidate_k": 20, "final_k": 10,
-                "rerank_threshold": RERANK_THRESHOLD, "portal_tools": [], "max_tool_calls": MAX_TOOL_CALLS,
-                "repair_attempts": 1}
+    if not isinstance(ids, list):
+        raise HTTPException(400, "source_ids must be a list.")
+    c["source_ids"] = list(dict.fromkeys(str(x) for x in ids if str(x).strip()))
+
+    datasets = c.get("datasets") or []
+    if not isinstance(datasets, list):
+        raise HTTPException(400, "datasets must be a list.")
+    normalised = []
+    seen = set()
+    for raw in datasets:
+        ref = _normalise_dataset_ref(raw)
+        key = (ref["api_id"], ref["alias"])
+        if key not in seen:
+            normalised.append(ref)
+            seen.add(key)
+    c["datasets"] = normalised
+
+    if len(c["source_ids"]) + len(c["datasets"]) > MAX_SOURCES:
+        raise HTTPException(400, f"A profile may reference at most {MAX_SOURCES} sources/datasets.")
+
+    defaults = {
+        "source_only": True,
+        "decompose": True,
+        "route_sources": True,
+        "agentic_planning": True,
+        "rerank": True,
+        "verify": True,
+        "require_verification": True,
+        "candidate_k": 20,
+        "final_k": 10,
+        "rerank_threshold": RERANK_THRESHOLD,
+        "portal_tools": [],
+        "max_tool_calls": MAX_TOOL_CALLS,
+        "repair_attempts": 1,
+        "retrieval_retry_attempts": 1,
+    }
     for key, value in defaults.items():
         c.setdefault(key, value)
-    for key, lo, hi in (("candidate_k", 1, MAX_CANDIDATES), ("final_k", 1, MAX_CONTEXT),
-                        ("max_tool_calls", 0, MAX_TOOL_CALLS), ("repair_attempts", 0, 1)):
+    for key, lo, hi in (
+        ("candidate_k", 1, MAX_CANDIDATES),
+        ("final_k", 1, MAX_CONTEXT),
+        ("max_tool_calls", 0, MAX_TOOL_CALLS),
+        ("repair_attempts", 0, 1),
+        ("retrieval_retry_attempts", 0, 1),
+    ):
         try:
             c[key] = int(c[key])
         except (TypeError, ValueError):
