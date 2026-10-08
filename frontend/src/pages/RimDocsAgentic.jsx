@@ -808,6 +808,10 @@ export default function RimDocsAgentic() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [error, setError] = useState('');
   const [copiedId, setCopiedId] = useState(null);
+  const [capabilities, setCapabilities] = useState(null);
+  const [searchMode, setSearchMode] = useState('auto');
+  const [textMode, setTextMode] = useState('auto');
+  const [filters, setFilters] = useState([]);
 
   const streamRef = useRef(null);
   const bottomRef = useRef(null);
@@ -821,9 +825,32 @@ export default function RimDocsAgentic() {
     }).catch((e) => setError(e.message));
   }, [nativeEnabled]);
 
+  useEffect(() => {
+    setFilters([]);
+    setSearchMode('auto');
+    setTextMode('auto');
+    setCapabilities(null);
+    if (!nativeEnabled || !profileId) return;
+    apiJson(`/rag/capabilities?profile_id=${encodeURIComponent(profileId)}`)
+      .then(setCapabilities)
+      .catch((e) => setError(e.message));
+  }, [nativeEnabled, profileId]);
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, running, stage]);
 
   const history = useMemo(() => messages.slice(-12).map((m) => ({ role: m.role, content: m.content })), [messages]);
+
+  const modeAvailable = (mode) => {
+    if (mode === 'auto') return true;
+    const datasets = capabilities?.datasets || [];
+    if (!datasets.length) return false;
+    return datasets.every((dataset) => {
+      if (mode === 'text') return dataset.search?.text?.enabled;
+      if (mode === 'vector') return dataset.search?.vector?.enabled;
+      if (mode === 'hybrid') return dataset.search?.hybrid?.enabled;
+      return false;
+    });
+  };
 
   if (!nativeEnabled) return <LegacyFallback />;
 
@@ -848,7 +875,14 @@ export default function RimDocsAgentic() {
 
     const es = apiEventSource('/rag/query/stream', {
       method: 'POST',
-      body: { query: text, profile_id: profileId, history },
+      body: {
+        query: text,
+        profile_id: profileId,
+        history,
+        search_mode: searchMode,
+        text_mode: textMode,
+        filters,
+      },
     });
     streamRef.current = es;
 
@@ -1007,6 +1041,65 @@ export default function RimDocsAgentic() {
 
       <footer className="shrink-0 border-t border-jj-gray-03 bg-white px-4 py-4 md:px-6">
         <div className="mx-auto max-w-5xl">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-[10px] font-bold uppercase tracking-wide text-jj-gray-05">Search</span>
+
+            {[
+              ['auto', 'Auto'],
+              ['text', 'Text'],
+              ['vector', 'Vector'],
+              ['hybrid', 'Hybrid'],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSearchMode(id)}
+                disabled={running || !modeAvailable(id)}
+                title={!modeAvailable(id) ? `${label} is not available on every dataset in this profile` : ''}
+                className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition disabled:cursor-not-allowed disabled:opacity-35 ${searchMode === id ? 'border-jj-gray-08 bg-jj-gray-08 text-white' : 'border-jj-gray-03 bg-white text-jj-gray-06 hover:bg-jj-gray-01'}`}
+              >
+                {label}
+              </button>
+            ))}
+
+            {searchMode === 'text' && (
+              <select
+                value={textMode}
+                onChange={(e) => setTextMode(e.target.value)}
+                disabled={running}
+                className="rounded-lg border border-jj-gray-03 bg-white px-2.5 py-1.5 text-[11px] text-jj-gray-06"
+              >
+                <option value="auto">Text: Auto</option>
+                <option value="full_text">Full-text indexed</option>
+                <option value="words">Words</option>
+                <option value="exact">Exact</option>
+                <option value="substring">Substring</option>
+              </select>
+            )}
+
+            <FilterBuilder capabilities={capabilities} filters={filters} onChange={setFilters} disabled={running} />
+
+            {!!filters.length && (
+              <div className="flex flex-wrap gap-1">
+                {filters.map((filterItem, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => !running && setFilters((previous) => previous.filter((_, itemIndex) => itemIndex !== index))}
+                    className="rounded-full bg-jj-gray-01 px-2 py-1 text-[10px] text-jj-gray-06 hover:bg-jj-gray-02"
+                    title="Remove filter"
+                  >
+                    {filterItem.column} {FILTER_LABELS[filterItem.operator] || filterItem.operator} {Array.isArray(filterItem.value) ? filterItem.value.join(', ') : filterItem.value ?? ''} ×
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <span className="ml-auto text-[10px] text-jj-gray-05">
+              {(capabilities?.datasets || []).length} dataset{(capabilities?.datasets || []).length === 1 ? '' : 's'}
+            </span>
+          </div>
+
           <div className="flex items-end gap-2 rounded-2xl border border-jj-gray-03 p-2 shadow-sm focus-within:border-jj-red/25 focus-within:ring-2 focus-within:ring-jj-red/10">
             <textarea
               value={query}
@@ -1021,7 +1114,7 @@ export default function RimDocsAgentic() {
               ? <button type="button" onClick={stop} className="inline-flex h-11 items-center gap-2 rounded-xl border border-jj-maroon-05/30 px-4 text-sm font-bold text-jj-maroon-05"><Square className="h-3.5 w-3.5 fill-current" />Stop</button>
               : <button type="button" onClick={ask} disabled={!query.trim() || !profileId} className="inline-flex h-11 items-center gap-2 rounded-xl bg-jj-red px-4 text-sm font-bold text-white disabled:opacity-40"><Send className="h-4 w-4" />Ask</button>}
           </div>
-          <p className="mt-2 text-center text-[10px] text-jj-gray-05">Grounded narrative + validated business visuals + technical lineage.</p>
+          <p className="mt-2 text-center text-[10px] text-jj-gray-05">Auto-planned retrieval · schema-validated filters · grounded narrative · technical lineage.</p>
         </div>
       </footer>
 
