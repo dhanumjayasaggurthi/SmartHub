@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   BarChart3, BookOpen, Check, CheckCircle2, ChevronRight, Copy,
-  Download, FlaskConical, Info, MessageSquarePlus, Search, Send, Settings2,
+  Download, Filter, FlaskConical, Info, MessageSquarePlus, Search, Send, Settings2,
   Square, ThumbsDown, ThumbsUp, X,
 } from 'lucide-react';
 import {
@@ -16,6 +16,7 @@ import { useRBAC } from '../context/RBACContext';
 
 const STAGES = {
   analyzing: 'Understanding your question',
+  planning: 'Planning retrieval strategy',
   routing: 'Selecting relevant sources',
   retrieving: 'Searching approved sources',
   reranking: 'Prioritizing the best evidence',
@@ -315,6 +316,130 @@ function SourcesDrawer({ items, onClose, onOpenCitation }) {
           ))}
         </div>
       </aside>
+    </div>
+  );
+}
+
+const FILTER_LABELS = {
+  eq: 'equals',
+  ne: 'not equal',
+  gt: 'greater than',
+  gte: 'greater than or equal',
+  lt: 'less than',
+  lte: 'less than or equal',
+  in: 'one of',
+  not_in: 'not one of',
+  contains: 'contains',
+  starts_with: 'starts with',
+  is_null: 'is empty',
+  not_null: 'is not empty',
+};
+
+function FilterBuilder({ capabilities, filters, onChange, disabled }) {
+  const datasets = capabilities?.datasets || [];
+  const [open, setOpen] = useState(false);
+  const [datasetId, setDatasetId] = useState('');
+  const [column, setColumn] = useState('');
+  const [operator, setOperator] = useState('eq');
+  const [value, setValue] = useState('');
+
+  useEffect(() => {
+    if (!datasets.length) {
+      setDatasetId('');
+      return;
+    }
+    if (!datasets.some((d) => d.dataset_id === datasetId)) {
+      setDatasetId(datasets[0].dataset_id);
+      setColumn('');
+    }
+  }, [datasets, datasetId]);
+
+  const dataset = datasets.find((d) => d.dataset_id === datasetId);
+  const columns = (dataset?.columns || []).filter((item) => item.filterable);
+  const selectedColumn = columns.find((item) => item.name === column);
+  const operators = selectedColumn?.filter_ops || [];
+
+  useEffect(() => {
+    if (operators.length && !operators.includes(operator)) setOperator(operators[0]);
+  }, [operators, operator]);
+
+  const add = () => {
+    if (!datasetId || !column || !operator) return;
+    if (!['is_null', 'not_null'].includes(operator) && !String(value).trim()) return;
+    const finalValue = ['in', 'not_in'].includes(operator)
+      ? String(value).split(',').map((item) => item.trim()).filter(Boolean)
+      : ['is_null', 'not_null'].includes(operator) ? null : value;
+    onChange([...filters, { dataset_id: datasetId, column, operator, value: finalValue }]);
+    setValue('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        disabled={disabled || !datasets.length}
+        className="inline-flex items-center gap-2 rounded-lg border border-jj-gray-03 bg-white px-3 py-2 text-xs font-bold text-jj-gray-06 hover:bg-jj-gray-01 disabled:opacity-40"
+      >
+        <Filter className="h-3.5 w-3.5" />
+        Filters
+        {!!filters.length && <span className="rounded-full bg-jj-red/10 px-1.5 py-0.5 text-[10px] text-jj-red">{filters.length}</span>}
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-50 mb-2 w-[min(92vw,620px)] rounded-xl border border-jj-gray-03 bg-white p-4 shadow-2xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-jj-gray-08">Add dataset filter</p>
+              <p className="mt-0.5 text-[11px] text-jj-gray-05">Columns and operators come from live Data API schema metadata.</p>
+            </div>
+            <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-1.5 hover:bg-jj-gray-01"><X className="h-4 w-4" /></button>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <label className="text-[11px] font-bold text-jj-gray-06">Dataset
+              <select value={datasetId} onChange={(e) => { setDatasetId(e.target.value); setColumn(''); }} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal">
+                {datasets.map((datasetItem) => <option key={datasetItem.dataset_id} value={datasetItem.dataset_id}>{datasetItem.name}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Column
+              <select value={column} onChange={(e) => setColumn(e.target.value)} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal">
+                <option value="">Choose column</option>
+                {columns.map((columnItem) => <option key={columnItem.name} value={columnItem.name}>{columnItem.name} · {columnItem.kind}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Operator
+              <select value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!column} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01">
+                {operators.map((op) => <option key={op} value={op}>{FILTER_LABELS[op] || op}</option>)}
+              </select>
+            </label>
+
+            <label className="text-[11px] font-bold text-jj-gray-06">Value
+              {selectedColumn?.kind === 'boolean' ? (
+                <select value={value} onChange={(e) => setValue(e.target.value)} disabled={['is_null', 'not_null'].includes(operator)} className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01">
+                  <option value="">Choose</option><option value="true">true</option><option value="false">false</option>
+                </select>
+              ) : (
+                <input
+                  type={selectedColumn?.kind === 'number' ? 'number' : 'text'}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  disabled={['is_null', 'not_null'].includes(operator)}
+                  placeholder={['in', 'not_in'].includes(operator) ? 'Comma-separated values' : selectedColumn?.kind === 'datetime' ? '2026-10-07 or timestamp' : 'Value'}
+                  className="mt-1 w-full rounded-lg border border-jj-gray-03 px-3 py-2 text-xs font-normal disabled:bg-jj-gray-01"
+                />
+              )}
+            </label>
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <button type="button" onClick={add} disabled={!column || (!['is_null', 'not_null'].includes(operator) && !String(value).trim())} className="rounded-lg bg-jj-gray-08 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">Add filter</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
