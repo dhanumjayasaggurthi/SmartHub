@@ -704,7 +704,12 @@ def _validate_plan_filters(filters, capability):
     by_name = {c["name"]: c for c in capability.get("columns") or []}
     out = []
     for raw in filters or []:
-        item = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
+        if hasattr(raw, "model_dump"):
+            item = raw.model_dump()
+        elif hasattr(raw, "dict"):
+            item = raw.dict()
+        else:
+            item = dict(raw)
         dataset_id = item.get("dataset_id")
         if dataset_id and dataset_id != capability["dataset_id"]:
             continue
@@ -1450,7 +1455,7 @@ def run_rag(body, auth, callback=None, cancel=None, request_id=None):
         for source in sources:
             plan = plan_by_source[source["id"]]
             for q in subqueries:
-                retrieval_query = plan.get("query") or q
+                retrieval_query = q if len(subqueries) > 1 else (plan.get("query") or q)
                 jobs[pool.submit(_retrieve, source, retrieval_query, cfg["candidate_k"], plan)] = (source, retrieval_query, plan)
         for future in as_completed(jobs):
             check()
@@ -1467,6 +1472,57 @@ def run_rag(body, auth, callback=None, cancel=None, request_id=None):
     if errors:
         diag["warnings"].append(f"{len(errors)} retrieval path(s) were unavailable.")
         diag["stages"]["source_errors"] = errors
+
+    if not groups and cfg.get("retrieval_retry_attempts", 0):
+        fallback_jobs = []
+        for source in sources:
+            plan = plan_by_source[source["id"]]
+            cap = capabilities[source["id"]]
+            if plan.get("mode") != "text" and cap.get("search", {}).get("text", {}).get("enabled"):
+                fallback_jobs.append((source, {
+                    **plan,
+                    "mode": "text",
+                    "text_mode": "auto",
+                    "reason": "Bounded fallback after the primary retrieval plan returned no evidence.",
+                }))
+        if fallback_jobs:
+            emit({"type": "status", "state": "retrieving"})
+            diag["stages"]["retrieval_retry"] = []
+            with ThreadPoolExecutor(max_workers=max(1, min(MAX_CONCURRENCY, len(fallback_jobs)))) as pool:
+                jobs = {
+                    pool.submit(_retrieve, source, standalone, cfg["candidate_k"], fallback_plan):
+                    (source, fallback_plan)
+                    for source, fallback_plan in fallback_jobs
+                }
+                for future in as_completed(jobs):
+                    check()
+                    source, fallback_plan = jobs[future]
+                    try:
+                        rows = future.result()
+                        if rows:
+                            groups.append(rows)
+                        diag["stages"]["retrieval_retry"].append({
+                            "source_id": source["id"],
+                            "mode": "text",
+                            "count": len(rows),
+                        })
+                        emit({
+                            "type": "source",
+                            "source_id": source["id"],
+                            "source_name": source["name"],
+                            "query": standalone,
+                            "count": len(rows),
+                            "mode": "text",
+                            "filters": fallback_plan.get("filters") or [],
+                            "fallback": True,
+                        })
+                    except Exception as exc:
+                        logger.warning("RAG fallback source %s failed (%s)", source["id"], type(exc).__name__)
+                        diag["stages"]["retrieval_retry"].append({
+                            "source_id": source["id"],
+                            "mode": "text",
+                            "error": type(exc).__name__,
+                        })
 
     try:
         tool_evidence = _portal_tools(client, models["routing"], standalone, profile, auth)
