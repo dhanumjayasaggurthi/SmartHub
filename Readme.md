@@ -486,3 +486,18 @@ A few pages are composites rather than routes of their own:
 - Frontend is just a static build, `npm run build` and serve `dist/` from nginx or wherever. Remember `.env` is baked in at build time — a config change means a rebuild.
 - Cron the two wrapper scripts for scheduled reports — again, fix the hardcoded paths, host and recipients first.
 - Don't put `dq_config.json`, `.env`, `data_validation_config.ini`, the Snowflake key, or email credentials in the repo — pull them in from whatever secrets manager you're using at deploy time.
+
+## PostgreSQL large-vector semantic search (opt-in)
+
+The Data API semantic-search path supports catalog-validated HNSW indexes over
+full-column half-precision casts of an existing fixed-size vector column.
+This enables large embeddings (such as 3072-dimensional vectors) to retain
+full-precision storage while HNSW uses a compatible halfvec expression index.
+It discovers the selected physical source and index strategy from PostgreSQL
+and the existing alias/model registry; there are no HAQ-specific code paths.
+
+See [ARCHITECTURE_HALFVECS.md](ARCHITECTURE_HALFVECS.md),
+[STATUS_HALFVECS.md](STATUS_HALFVECS.md), and
+[docs/SEMANTIC_SEARCH_INDEX_GUIDE.md](docs/SEMANTIC_SEARCH_INDEX_GUIDE.md).
+Index DDL remains a DBA deployment decision; the portal does not build these
+expression indexes. Existing APIs continue to use their native vector indexes.
