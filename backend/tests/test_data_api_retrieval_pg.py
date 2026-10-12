@@ -287,24 +287,24 @@ def test_keyword_timeout_is_per_alias_and_degrades_to_semantic(env):
 
 def test_wide_halfvec_index_config_and_retrieval(env):
     """A full-precision vector column can use a halfvec expression HNSW."""
-    with env["api"]._connector("postgresql", "DEV", env["params"]["dbname"]) as source:
+    with env["api"]._connector("postgresql", "DEV", env["dbname"]) as source:
         vec = next(v for v in source.get_vector_columns(
-            env["params"]["dbname"], SCHEMA, "wide_chunks") if v["name"] == "embedding")
+            env["dbname"], SCHEMA, "wide_chunks") if v["name"] == "embedding")
         indexes = [i for i in vec["ann_indexes"] if i["metric"] == "cosine"]
         assert len(indexes) == 1 and indexes[0]["index_kind"] == "halfvec_cast"
         q = [math.sin((1 + d) / 7.0) for d in range(1, 3073)]
         stmt, params = source._vector_statement(SCHEMA, "wide_chunks", ["id"], vec,
                                                  q, 3, "cosine", None, "auto", ["id"])
         assert "halfvec(3072)" in stmt
-        with source.read_only_transaction(env["params"]["dbname"], 10000) as cur:
+        with source.read_only_transaction(env["dbname"], 10000) as cur:
             source.prefer_index(cur)
             cur.execute("EXPLAIN " + stmt, params)
             plan = "\n".join(x[0] for x in cur.fetchall())
             assert "wide_chunks_halfvec_hnsw" in plan, plan
-        candidates = source.search_vector_rows(env["params"]["dbname"], SCHEMA,
+        candidates = source.search_vector_rows(env["dbname"], SCHEMA,
             "wide_chunks", ["id"], vec, q, 3, search_mode="auto", key_columns=["id"])
         assert candidates and candidates[0]["row"]["id"] == 1
-        exact = source.search_vector_rows(env["params"]["dbname"], SCHEMA,
+        exact = source.search_vector_rows(env["dbname"], SCHEMA,
             "wide_chunks", ["id"], vec, q, 3, search_mode="exact", key_columns=["id"])
         assert exact and exact[0]["row"]["id"] == 1
     result = env["save"]("wide", register="fake3072", text_column="question")
