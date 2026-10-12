@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -19,8 +20,10 @@ from urllib.parse import quote, urlparse
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Response
 from fastapi.responses import StreamingResponse
 
+from audit import write_audit_event
 from auth import require_permission
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,7 @@ logger = logging.getLogger(__name__)
 streamsets_router = APIRouter(prefix="/api/streamsets", tags=["Data Studio - StreamSets"])
 
 PERM = "runStreamsetsExtractor"
+SECRET_PERM = "viewStreamsetsSecrets"   # reveal passwords / keys / secret files, one at a time
 
 _config: Optional[Dict[str, Any]] = None
 _scripts: Dict[str, Any] = {}
@@ -39,8 +43,14 @@ MAX_FRAGMENT_DEPTH = 3
 MAX_VALUE_CHARS = 20_000
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 HEARTBEAT_SECONDS = 15
+RESOURCE_TTL = 300                  # a resolved resource file is reused for this long
+MAX_RESOURCE_BYTES = 64 * 1024
+DEFAULT_RESOURCES_DIR = "/projects/var/lib/sdc-resources"
 
 PIPELINE_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,300}$")
+# (inside a list/map setting the value is JSON text, so its quotes arrive escaped as \")
+LOAD_RESOURCE_RE = re.compile(r"""runtime:loadResource(?:Raw)?\(\s*\\?["']([^"'\\]+)\\?["']\s*,\s*(true|false)\s*\)""", re.I)
+RESOURCE_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. /-]{0,299}$")
 PARAM_REF_RE = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}")
 SECRET_RE = re.compile(r"passw|pwd|passphrase|secret|private_?key|token|api_?key|access_?key|credential", re.I)
 MASK = "********"
@@ -117,6 +127,8 @@ _list_cache: Dict[str, Any] = {}
 _latest_cache: Dict[str, Any] = {}
 _commit_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _semaphore = threading.BoundedSemaphore(2)
+_resource_cache: Dict[str, Any] = {}   # path -> (time, value, host)
+_sdc_cache: Dict[str, Any] = {}
 
 
 class _NotFound(Exception):
@@ -348,10 +360,19 @@ def _wire(stages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def feeding(s, lanes):
         return list(dict.fromkeys(p for lane in s["_in"] for p in lanes.get(lane, []) if p != s["instance"]))
 
+    taking: Dict[str, List[str]] = {}
+    for s in stages:
+        for lane in s["_in"]:
+            taking.setdefault(lane, []).append(s["instance"])
+
     for s in stages:
         s["upstream"] = feeding(s, data_from)
         s["triggered_by"] = feeding(s, event_from)
         s["downstream"], s["triggers"] = [], []
+        # A stage with several outputs (Stream Selector) - which lane feeds which stages, so the
+        # page can say "records where X go to Y" instead of guessing from the order.
+        if len(s["_out"]) > 1:
+            s["routes"] = [{"lane": lane, "to": taking.get(lane, [])} for lane in s["_out"]]
     for s in stages:
         for key, back in (("upstream", "downstream"), ("triggered_by", "triggers")):
             for up in s[key]:
@@ -522,6 +543,7 @@ def health(auth: dict = Depends(require_permission(PERM))):
         "server": urlparse(cfg["url"]).netloc,
         "extractor": _extractor_status(cfg),
         "max_per_run": cfg["max_per_run"],
+        "resources": importlib.util.find_spec("paramiko") is not None,
     }
 
 
@@ -540,6 +562,177 @@ def pipeline_detail(pipeline_id: str, refresh: bool = Query(False), auth: dict =
         return _detail(pipeline_id, refresh)
     except _NotFound:
         raise HTTPException(status_code=404, detail="That pipeline wasn't found in StreamSets - it may have been deleted")
+
+
+# ============================================================================
+# runtime:loadResource() files - read from the Data Collectors on request
+# ============================================================================
+
+def _resource_refs(detail: Dict[str, Any]) -> Dict[str, bool]:
+    """Every resource file the pipeline loads -> True when any use of it should stay hidden
+    (loaded as restricted, used by a secret setting/parameter, or named like a secret)."""
+    refs: Dict[str, bool] = {}
+
+    def scan(text, secret):
+        for path, restricted in LOAD_RESOURCE_RE.findall(text or ""):
+            refs[path] = refs.get(path, False) or secret or restricted.lower() == "true" or bool(SECRET_RE.search(path))
+
+    for s in _flatten(detail["stages"]):
+        for c in s["config"]:
+            scan(c["value"], c["secret"] or _is_secret(c["name"]))
+    for p in detail["parameters"]:
+        scan(p["value"], _is_secret(p["name"]))
+    return refs
+
+
+def _sdc_hosts() -> List[str]:
+    with _cache_lock:
+        hit = _sdc_cache.get("hosts")
+        if hit and time.time() - hit[0] < RESOURCE_TTL:
+            return hit[1]
+    sdcs = _get("jobrunner/rest/v1/sdcs") or []
+    hosts = [h for h in dict.fromkeys(urlparse(s.get("httpUrl") or "").hostname
+                                      for s in sdcs if isinstance(s, dict)) if h]
+    with _cache_lock:
+        _sdc_cache["hosts"] = (time.time(), hosts)
+    return hosts
+
+
+def _read_resource(path: str):
+    """Same approach as Final_pipeline_extractor.py: SFTP to each Data Collector until one has the file."""
+    try:
+        import paramiko
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Showing resource file values needs the 'paramiko' package on the SmartHub server")
+    cfg, raw = _settings(), _config or {}
+    user = raw.get("ssh_username") or cfg["username"]
+    password = raw.get("ssh_password") or cfg["password"]
+    port = int(raw.get("ssh_port") or 22)
+    base = (raw.get("resources_dir") or DEFAULT_RESOURCES_DIR).rstrip("/")
+    tried = []
+    for host in _sdc_hosts():
+        tried.append(host)
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())   # as the extractor script does
+        try:
+            ssh.connect(host, port, user, password, timeout=10, banner_timeout=10, auth_timeout=10,
+                        allow_agent=False, look_for_keys=False)
+            with ssh.open_sftp() as sftp, sftp.open(f"{base}/{path}", "r") as f:
+                data = f.read(MAX_RESOURCE_BYTES + 1)
+        except (OSError, paramiko.SSHException) as e:   # not on this host, or the host can't be reached
+            logger.info("Resource %s not read from %s: %s", path, host, type(e).__name__)
+            continue
+        finally:
+            ssh.close()
+        text = data[:MAX_RESOURCE_BYTES].decode("utf-8", "replace").strip()
+        return text + ("\n… (truncated)" if len(data) > MAX_RESOURCE_BYTES else ""), host, tried
+    return None, None, tried
+
+
+@streamsets_router.get("/resource")
+def resource_value(pipeline_id: str = Query(...), path: str = Query(...), auth: dict = Depends(require_permission(PERM))):
+    """The contents of a resource file a pipeline loads with runtime:loadResource(). Only files the
+    pipeline actually references can be read, and secret ones are never sent to the browser."""
+    _check_id(pipeline_id)
+    if not RESOURCE_PATH_RE.match(path) or ".." in path.split("/"):
+        raise HTTPException(status_code=400, detail="That isn't a valid resource file path")
+    try:
+        detail = _detail(pipeline_id, False)
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="That pipeline wasn't found in StreamSets - it may have been deleted")
+    refs = _resource_refs(detail)
+    if path not in refs:
+        raise HTTPException(status_code=404, detail="This pipeline doesn't load that resource file")
+    if refs[path]:
+        return {"path": path, "secret": True, "value": None, "host": None}
+    with _cache_lock:
+        hit = _resource_cache.get(path)
+    if hit and time.time() - hit[0] < RESOURCE_TTL:
+        return {"path": path, "secret": False, "value": hit[1], "host": hit[2]}
+    value, host, tried = _read_resource(path)
+    logger.info("%s looked up StreamSets resource %s for %s: %s", auth["user"]["email"], path, pipeline_id,
+                f"found on {host}" if value is not None else "not found")
+    if value is None:
+        where = ", ".join(tried) if tried else "no Data Collectors are registered"
+        raise HTTPException(status_code=404, detail=f"Couldn't find {path} on the Data Collectors ({where})")
+    with _cache_lock:
+        _resource_cache[path] = (time.time(), value, host)
+    return {"path": path, "secret": False, "value": value, "host": host}
+
+
+def _raw_stages(pdef: Dict[str, Any], depth: int = 0):
+    """Every stage in the definition as StreamSets stores it, fragments included (same walk as _build_stages)."""
+    inline = {f.get("fragmentInstanceId"): f for f in pdef.get("fragments") or []
+              if isinstance(f, dict) and f.get("fragmentInstanceId")}
+    for s in pdef.get("stages") or []:
+        if not isinstance(s, dict):
+            continue
+        yield s
+        ui = s.get("uiInfo") or {}
+        if not ui.get("fragmentGroupStage") or depth >= MAX_FRAGMENT_DEPTH:
+            continue
+        inner = inline.get(ui.get("fragmentInstanceId"))
+        if not (inner or {}).get("stages") and ui.get("pipelineCommitId"):
+            try:
+                inner = _definition(_get_commit(ui["pipelineCommitId"]))
+            except (_NotFound, HTTPException):
+                inner = None
+        if isinstance(inner, dict):
+            yield from _raw_stages(inner, depth + 1)
+
+
+@streamsets_router.get("/secret")
+def secret_value(
+    response: Response,
+    pipeline_id: str = Query(...),
+    kind: str = Query(..., pattern="^(param|config|resource)$"),
+    name: str = Query(..., min_length=1, max_length=300),
+    stage: Optional[str] = Query(None, max_length=300),
+    auth: dict = Depends(require_permission(PERM, SECRET_PERM)),
+):
+    """The real value behind a hidden secret. Only for people holding viewStreamsetsSecrets;
+    each reveal is logged (who / what - never the value) and never cached by the browser."""
+    _check_id(pipeline_id)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        latest = _latest(pipeline_id, False)
+        pdef = _definition(_get_commit(latest["commitId"]))
+    except _NotFound:
+        raise HTTPException(status_code=404, detail="That pipeline wasn't found in StreamSets - it may have been deleted")
+
+    value, host = None, None
+    if kind == "param":
+        constants = _constants(pdef)
+        if name not in constants:
+            raise HTTPException(status_code=404, detail="This pipeline has no parameter with that name")
+        value = constants[name]
+    elif kind == "config":
+        if not stage:
+            raise HTTPException(status_code=400, detail="Say which stage the setting belongs to")
+        raw = next((s for s in _raw_stages(pdef) if s.get("instanceName") == stage), None)
+        item = next((c for c in (raw or {}).get("configuration") or []
+                     if isinstance(c, dict) and c.get("name") == name), None)
+        if item is None:
+            raise HTTPException(status_code=404, detail="That setting wasn't found on this stage")
+        value = _display(item.get("value"))
+    else:
+        if not RESOURCE_PATH_RE.match(name) or ".." in name.split("/"):
+            raise HTTPException(status_code=400, detail="That isn't a valid resource file path")
+        if name not in _resource_refs(_detail(pipeline_id, False)):
+            raise HTTPException(status_code=404, detail="This pipeline doesn't load that resource file")
+        value, host, tried = _read_resource(name)   # secrets are read fresh, never cached server-side
+        if value is None:
+            where = ", ".join(tried) if tried else "no Data Collectors are registered"
+            raise HTTPException(status_code=404, detail=f"Couldn't find {name} on the Data Collectors ({where})")
+
+    # fail closed: no audit row, no value
+    try:
+        write_audit_event(action="streamsets_secret_viewed", performed_by=auth["user"]["email"], target=pipeline_id,
+                          details=f"Viewed {kind} {stage + '/' if stage else ''}{name}")
+    except Exception:
+        logger.exception("Couldn't audit a StreamSets secret reveal")
+        raise HTTPException(status_code=503, detail="Couldn't record the audit entry, so the value wasn't shown - try again")
+    return {"kind": kind, "name": name, "stage": stage, "value": value, "host": host}
 
 
 def _sse(event: Dict[str, Any]) -> str:

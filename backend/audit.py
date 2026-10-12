@@ -55,6 +55,10 @@ def _drop_aggregates() -> None:
     with _aggregates_lock:
         _aggregates.clear()
         _generation += 1
+    with _today_lock:
+        _today_cache["value"] = None
+    with _suggest_lock:
+        _suggest_cache.clear()
 
 
 def _store(key: tuple, value, generation: int) -> None:
@@ -238,6 +242,23 @@ _CATEGORY_SQL = {
 _CATEGORY_SQL["Data"] = (
     "NOT (" + " OR ".join(sql for sql, _ in _CATEGORY_SQL.values()) + ")",
     [],
+)
+
+# Actions the Audit Log flags for a second look (the "Needs a look" list,
+# the Sensitive counts). Keep in sync with SENSITIVE in AuditPage.jsx.
+_SENSITIVE_ACTIONS = [
+    "role_deleted", "role_removed", "streamsets_secret_viewed",
+    "audit_log_deleted", "audit_edit_mode_accessed",
+]
+
+# The same five buckets as one expression, for counting per category in a
+# single GROUP BY.
+_CATEGORY_CASE = (
+    "CASE WHEN " + _CATEGORY_SQL["Roles"][0] + " THEN 'Roles' "
+    "WHEN " + _CATEGORY_SQL["Access"][0] + " THEN 'Access' "
+    "WHEN " + _CATEGORY_SQL["Admin"][0] + " THEN 'Admin' "
+    "WHEN " + _CATEGORY_SQL["Navigation"][0] + " THEN 'Navigation' "
+    "ELSE 'Data' END"
 )
 
 _RANGE_HOURS = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}
@@ -426,18 +447,90 @@ def _audit_stats() -> dict:
                         WHERE timestamp >= ? AND timestamp < ?) AS today,
                       (SELECT COUNT(*) FROM audit_log WHERE action = ANY(?)) AS role_changes,
                       (SELECT COUNT(*) FROM (SELECT LOWER(performed_by) FROM audit_log
-                                             GROUP BY 1) AS people) AS unique_users""",
-            (today_start, tomorrow_start, list(role_actions)),
+                                             GROUP BY 1) AS people) AS unique_users,
+                      (SELECT COUNT(*) FROM audit_log
+                        WHERE timestamp >= ? AND action = ANY(?)) AS sensitive_7d,
+                      (SELECT json_agg(json_build_array(hour, n)) FROM (
+                          SELECT EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/New_York')::int AS hour,
+                                 COUNT(*) AS n
+                          FROM audit_log WHERE timestamp >= ? AND timestamp < ?
+                          GROUP BY 1) AS x) AS hourly""",
+            (today_start, tomorrow_start, list(role_actions),
+             datetime.now(EASTERN) - timedelta(days=7), _SENSITIVE_ACTIONS,
+             today_start, tomorrow_start),
         ).fetchone()
     total, today_count = row["total"], row["today"]
     role_changes, unique_users = row["role_changes"], row["unique_users"]
+
+    hourly = [0] * 24
+    for h, n in (json.loads(row["hourly"]) if row["hourly"] else []):
+        if h is not None and 0 <= h < 24:
+            hourly[h] = n
 
     return {
         "total": total,
         "today": today_count,
         "role_changes": role_changes,
         "unique_users": unique_users,
+        "sensitive_7d": row["sensitive_7d"],
+        "hourly_today": hourly,
+        "current_hour": datetime.now(EASTERN).hour,
+        "date": today.isoformat(),
     }
+
+
+# The banner dial on the Audit Log reads this every 15 seconds while Live is
+# on, so it has to be both fresh and cheap: one index range scan over today's
+# rows, shared between everyone polling for a few seconds.
+TODAY_TTL_SECONDS = 5
+_today_cache = {"at": 0.0, "value": None}
+_today_lock = threading.Lock()
+
+
+@audit_router.get("/today")
+def get_audit_today(auth: dict = Depends(require_permission("viewAudit"))):
+    """Today's events per hour (Eastern) plus the newest few, read fresh."""
+    with _today_lock:
+        hit = _today_cache["value"]
+        if hit is not None and time.monotonic() - _today_cache["at"] < TODAY_TTL_SECONDS:
+            return hit
+    value = _audit_today()
+    with _today_lock:
+        _today_cache["at"], _today_cache["value"] = time.monotonic(), value
+    return value
+
+
+def _audit_today() -> dict:
+    now = datetime.now(EASTERN)
+    today_start, tomorrow_start = _day_start(now.date()), _day_start(now.date() + timedelta(days=1))
+    with _db(read_only=True) as conn:
+        row = conn.execute(
+            """SELECT
+                 (SELECT json_agg(json_build_array(hour, n)) FROM (
+                     SELECT EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/New_York')::int AS hour,
+                            COUNT(*) AS n
+                     FROM audit_log WHERE timestamp >= ? AND timestamp < ?
+                     GROUP BY 1) AS x) AS hourly,
+                 (SELECT json_agg(json_build_array(id, timestamp, action) ORDER BY timestamp DESC, id) FROM (
+                     SELECT id, timestamp, action FROM audit_log
+                     WHERE timestamp >= ? ORDER BY timestamp DESC, id LIMIT 20) AS y) AS latest""",
+            (today_start, tomorrow_start, today_start),
+        ).fetchone()
+    hourly = [0] * 24
+    for h, n in (json.loads(row["hourly"]) if row["hourly"] else []):
+        if h is not None and 0 <= h < 24:
+            hourly[h] = n
+    latest = json.loads(row["latest"]) if row["latest"] else []
+    return {
+        "date": now.date().isoformat(),
+        "current_hour": now.hour,
+        "hourly": hourly,
+        "total": sum(hourly),
+        "latest": [{"id": i, "timestamp": ts, "action": a} for i, ts, a in latest],
+    }
+
+
+DAILY_DAYS = 30
 
 
 @audit_router.get("/analytics")
@@ -465,10 +558,15 @@ def get_audit_analytics(
 
 def _audit_analytics(search, action, performed_by, date_from, date_to, category, range_key) -> dict:
     where, params = _build_where(search, action, performed_by, date_from, date_to, category, range_key)
+    # The 30-day chart ignores the range (a 7-day range would leave it mostly
+    # empty); the category chips ignore category and action (each chip shows
+    # what it would return if picked).
+    where_days, params_days = _build_where(search, action, performed_by, date_from, date_to, category, None)
+    where_cats, params_cats = _build_where(search, None, performed_by, date_from, date_to, None, range_key)
 
     now = datetime.now(EASTERN)
     today_start = _day_start(now.date())
-    week_start = _day_start((now - timedelta(days=6)).date())
+    month_start = _day_start((now - timedelta(days=DAILY_DAYS - 1)).date())
 
     def _and(extra_sql: str) -> str:
         return f"{where} AND {extra_sql}" if where else f"WHERE {extra_sql}"
@@ -479,7 +577,7 @@ def _audit_analytics(search, action, performed_by, date_from, date_to, category,
     with _db(read_only=True) as conn:
         row = conn.execute(
             f"""WITH f AS NOT MATERIALIZED (
-                    SELECT timestamp, action, performed_by FROM audit_log {where}
+                    SELECT id, timestamp, action, performed_by, target FROM audit_log {where}
                 )
                 SELECT
                   (SELECT COUNT(*) FROM f) AS matched,
@@ -487,25 +585,41 @@ def _audit_analytics(search, action, performed_by, date_from, date_to, category,
                       SELECT EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/New_York')::int AS hour,
                              COUNT(*) AS n
                       FROM f WHERE timestamp >= ? GROUP BY 1) AS x) AS hourly,
-                  (SELECT json_agg(json_build_array(day, n)) FROM (
-                      SELECT to_char(timestamp AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS day,
+                  (SELECT json_agg(json_build_array(dow, hour, n)) FROM (
+                      SELECT EXTRACT(ISODOW FROM timestamp AT TIME ZONE 'America/New_York')::int AS dow,
+                             EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/New_York')::int AS hour,
                              COUNT(*) AS n
-                      FROM f WHERE timestamp >= ? GROUP BY 1) AS x) AS daily,
+                      FROM f GROUP BY 1, 2) AS x) AS heat,
+                  (SELECT COUNT(*) FROM f WHERE action = ANY(?)) AS sensitive_count,
+                  (SELECT json_agg(json_build_array(id, timestamp, action, performed_by, target)
+                                   ORDER BY timestamp DESC) FROM (
+                      SELECT id, timestamp, action, performed_by, target FROM f
+                      WHERE action = ANY(?) ORDER BY timestamp DESC LIMIT 6) AS x) AS sensitive,
                   (SELECT json_agg(json_build_array(action, n) ORDER BY n DESC, action) FROM (
                       SELECT action, COUNT(*) AS n FROM f GROUP BY 1) AS x) AS actions,
                   (SELECT json_agg(json_build_array(email, n) ORDER BY n DESC, email) FROM (
                       SELECT LOWER(performed_by) AS email, COUNT(*) AS n
                       FROM f WHERE performed_by <> '' AND performed_by <> 'unknown'
                       GROUP BY 1 ORDER BY n DESC, email LIMIT 8) AS x) AS actors""",
-            params + [today_start, week_start],
+            params + [today_start, _SENSITIVE_ACTIONS, _SENSITIVE_ACTIONS],
         ).fetchone()
+        daily_sql = f"{where_days} AND timestamp >= ?" if where_days else "WHERE timestamp >= ?"
+        daily_rows = conn.execute(
+            f"""SELECT to_char(timestamp AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS day,
+                       COUNT(*) AS n
+                FROM audit_log {daily_sql} GROUP BY 1""",
+            params_days + [month_start],
+        ).fetchall()
+        cat_rows = conn.execute(
+            f"SELECT {_CATEGORY_CASE} AS cat, COUNT(*) AS n FROM audit_log {where_cats} GROUP BY 1",
+            params_cats,
+        ).fetchall()
 
     def _pairs(text):
         return json.loads(text) if text else []
 
     matched = row["matched"]
     hourly_rows = [{"hour": h, "n": n} for h, n in _pairs(row["hourly"])]
-    daily_rows = [{"day": d, "n": n} for d, n in _pairs(row["daily"])]
     action_rows = [{"action": a, "n": n} for a, n in _pairs(row["actions"])]
     actor_rows = [{"email": e, "n": n} for e, n in _pairs(row["actors"])]
 
@@ -516,7 +630,7 @@ def _audit_analytics(search, action, performed_by, date_from, date_to, category,
 
     by_day = {r["day"]: r["n"] for r in daily_rows}
     daily = []
-    for i in range(6, -1, -1):
+    for i in range(DAILY_DAYS - 1, -1, -1):
         d = (now - timedelta(days=i)).date()
         daily.append({"date": d.isoformat(), "count": by_day.get(d.isoformat(), 0)})
 
@@ -527,6 +641,143 @@ def _audit_analytics(search, action, performed_by, date_from, date_to, category,
         "daily": daily,
         "actions": [{"action": r["action"], "count": r["n"]} for r in action_rows],
         "actors": [{"email": r["email"], "count": r["n"]} for r in actor_rows],
+        # 7 rows Mon..Sun x 24 hours, Eastern
+        "heat": _heat(_pairs(row["heat"])),
+        "sensitive_count": row["sensitive_count"],
+        "sensitive": [
+            {"id": i, "timestamp": ts, "action": a, "performed_by": p, "target": t}
+            for i, ts, a, p, t in _pairs(row["sensitive"])
+        ],
+        "categories": {r["cat"]: r["n"] for r in cat_rows},
+    }
+
+
+def _heat(triples) -> list:
+    grid = [[0] * 24 for _ in range(7)]
+    for dow, hour, n in triples:
+        if dow and 1 <= dow <= 7 and hour is not None and 0 <= hour < 24:
+            grid[dow - 1][hour] = n
+    return grid
+
+
+@audit_router.get("/people")
+def get_audit_people(
+    search: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    performed_by: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    range_key: Optional[str] = Query(None, alias="range"),
+    auth: dict = Depends(require_permission("viewAudit")),
+):
+    """The People tab: the most active people under the current filters, each
+    with their sensitive count, last activity anywhere in the log, top three
+    actions and a 21-day activity line."""
+    key = ("people", search, action, performed_by, date_from, date_to, category, range_key)
+    return _cached(key, lambda: _audit_people(search, action, performed_by, date_from, date_to,
+                                              category, range_key))
+
+
+PEOPLE_LIMIT = 24
+PEOPLE_SPARK_DAYS = 21
+
+
+def _audit_people(search, action, performed_by, date_from, date_to, category, range_key) -> dict:
+    where, params = _build_where(search, action, performed_by, date_from, date_to, category, range_key)
+    where_days, params_days = _build_where(search, action, performed_by, date_from, date_to, category, None)
+    now = datetime.now(EASTERN)
+    spark_start = _day_start((now - timedelta(days=PEOPLE_SPARK_DAYS - 1)).date())
+
+    # Three passes, each one scan at most: who (and how much), what they did,
+    # and their last 21 days. last_seen is an index probe per person on
+    # audit_log_actor_idx (lower(performed_by), timestamp).
+    with _db(read_only=True) as conn:
+        rows = conn.execute(
+            f"""WITH top AS (
+                    SELECT LOWER(performed_by) AS email, COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE action = ANY(?)) AS sens
+                    FROM audit_log {where}
+                    GROUP BY 1
+                    HAVING LOWER(performed_by) <> '' AND LOWER(performed_by) <> 'unknown'
+                    ORDER BY n DESC, email LIMIT ?
+                )
+                SELECT top.email, top.n, top.sens,
+                       (SELECT MAX(a.timestamp) FROM audit_log a
+                         WHERE LOWER(a.performed_by) = top.email) AS last_seen
+                FROM top ORDER BY top.n DESC, top.email""",
+            [_SENSITIVE_ACTIONS] + params + [PEOPLE_LIMIT],
+        ).fetchall()
+        emails = [r["email"] for r in rows]
+        action_rows, spark_rows = [], []
+        if emails:
+            clause = f"{where} AND" if where else "WHERE"
+            action_rows = conn.execute(
+                f"""SELECT LOWER(performed_by) AS email, action, COUNT(*) AS n
+                    FROM audit_log {clause} LOWER(performed_by) = ANY(?)
+                    GROUP BY 1, 2""",
+                params + [emails],
+            ).fetchall()
+            clause = f"{where_days} AND" if where_days else "WHERE"
+            spark_rows = conn.execute(
+                f"""SELECT LOWER(performed_by) AS email,
+                           to_char(timestamp AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS day,
+                           COUNT(*) AS n
+                    FROM audit_log {clause} timestamp >= ? AND LOWER(performed_by) = ANY(?)
+                    GROUP BY 1, 2""",
+                params_days + [spark_start, emails],
+            ).fetchall()
+
+    days = [(now - timedelta(days=i)).date().isoformat() for i in range(PEOPLE_SPARK_DAYS - 1, -1, -1)]
+    per_day, per_action = {}, {}
+    for r in spark_rows:
+        per_day.setdefault(r["email"], {})[r["day"]] = r["n"]
+    for r in action_rows:
+        per_action.setdefault(r["email"], []).append((r["action"], r["n"]))
+
+    def top3(email):
+        ranked = sorted(per_action.get(email, []), key=lambda x: (-x[1], x[0]))[:3]
+        return [{"action": a, "count": n} for a, n in ranked]
+
+    return {
+        "people": [
+            {
+                "email": r["email"],
+                "count": r["n"],
+                "sensitive": r["sens"],
+                "last_seen": r["last_seen"],
+                "top_actions": top3(r["email"]),
+                "daily": [per_day.get(r["email"], {}).get(d, 0) for d in days],
+            }
+            for r in rows
+        ],
+    }
+
+
+@audit_router.get("/logs/{log_id}/context")
+def get_audit_log_context(log_id: str, auth: dict = Depends(require_permission("viewAudit"))):
+    """One event plus the same person's two events either side of it, newest
+    first - the detail panel's "around this moment" list, and how a shared
+    link to an event opens when that event isn't on the current page."""
+    with _db(read_only=True) as conn:
+        row = conn.execute("SELECT * FROM audit_log WHERE id = ?", (log_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Log entry not found")
+        who, ts = row["performed_by"], row["timestamp"]
+        newer = conn.execute(
+            "SELECT * FROM audit_log WHERE LOWER(performed_by) = LOWER(?) AND (timestamp, id) > (?, ?) "
+            "ORDER BY timestamp, id LIMIT 2",
+            (who, ts, log_id),
+        ).fetchall()
+        older = conn.execute(
+            "SELECT * FROM audit_log WHERE LOWER(performed_by) = LOWER(?) AND (timestamp, id) < (?, ?) "
+            "ORDER BY timestamp DESC, id DESC LIMIT 2",
+            (who, ts, log_id),
+        ).fetchall()
+    event = dict(row)
+    return {
+        "event": event,
+        "around": [dict(r) for r in reversed(newer)] + [event] + [dict(r) for r in older],
     }
 
 
@@ -736,6 +987,78 @@ def _unique_users() -> dict:
             ORDER BY people.last_activity DESC, people.who
         """).fetchall()
     return {"users": [dict(r) for r in rows]}
+
+
+# ── search suggestions ───────────────────────────────────────────────────────
+# What the Audit Log search boxes suggest, taken from the events the page is
+# currently showing: the same range / category / person / date filters as
+# /logs. The box being typed in is left out of its own filter (the search text
+# for the main box, the person for the person box), and so is the action, so
+# a suggestion can switch to another one. Answers are cached briefly in a
+# small cache of their own so typing never evicts the dashboard aggregates.
+SUGGEST_TTL_SECONDS = 30
+_suggest_cache: Dict[tuple, tuple] = {}
+_suggest_lock = threading.Lock()
+
+
+@audit_router.get("/suggest")
+def get_audit_suggest(
+    q: str = Query("", max_length=100),
+    performed_by: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    range_key: Optional[str] = Query(None, alias="range"),
+    auth: dict = Depends(require_permission("viewAudit")),
+):
+    term = q.strip().lower()
+    key = (term, (performed_by or "").strip().lower(), date_from, date_to, category, range_key)
+    now = time.monotonic()
+    with _suggest_lock:
+        hit = _suggest_cache.get(key)
+        if hit and now - hit[0] < SUGGEST_TTL_SECONDS:
+            return hit[1]
+
+    # people: everything but the person filter; targets and actions: all of it
+    p_where, p_params = _build_where(None, None, None, date_from, date_to, category, range_key)
+    where, params = _build_where(None, None, performed_by, date_from, date_to, category, range_key)
+    like = f"%{_like_escape(term)}%"
+    person_like = "LOWER(performed_by) LIKE ? ESCAPE '\\'"
+    target_like = "target <> '' AND LOWER(target) LIKE ? ESCAPE '\\'"
+
+    def scoped(base: str, extra: str) -> str:
+        return f"{base} AND {extra}" if base else f"WHERE {extra}"
+
+    with _db(read_only=True) as conn:
+        people = conn.execute(
+            f"""SELECT LOWER(performed_by) AS email, COUNT(*) AS n FROM audit_log
+                {scoped(p_where, person_like)}
+                GROUP BY LOWER(performed_by) ORDER BY n DESC, email LIMIT 8""",
+            (*p_params, like),
+        ).fetchall()
+        targets = conn.execute(
+            f"""SELECT target, COUNT(*) AS n FROM audit_log
+                {scoped(where, target_like)}
+                GROUP BY target ORDER BY n DESC, target LIMIT 6""",
+            (*params, like),
+        ).fetchall()
+        # every action in view — the page matches these against their labels
+        actions = conn.execute(
+            f"""SELECT action, COUNT(*) AS n FROM audit_log {where}
+                GROUP BY action ORDER BY n DESC LIMIT 200""",
+            params,
+        ).fetchall()
+
+    value = {
+        "people": [{"email": r["email"], "count": r["n"]} for r in people],
+        "targets": [{"target": r["target"], "count": r["n"]} for r in targets],
+        "actions": [{"action": r["action"], "count": r["n"]} for r in actions],
+    }
+    with _suggest_lock:
+        if len(_suggest_cache) > 500:
+            _suggest_cache.clear()
+        _suggest_cache[key] = (now, value)
+    return value
 
 
 @audit_router.get("/active-users")

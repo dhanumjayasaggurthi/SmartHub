@@ -264,7 +264,12 @@ export const PERMISSION_GROUPS = [
         ],
       },
       { key: 'runS3Explorer', label: 'S3 Explorer', description: 'Browse configured S3 buckets: list, preview, download and, where enabled, upload or delete objects' },
-      { key: 'runStreamsetsExtractor', label: 'StreamSets Extractor', description: 'Browse StreamSets pipelines (sources, transformations, destinations, fragments) and extract their reports' },
+      {
+        key: 'runStreamsetsExtractor', label: 'StreamSets Extractor', description: 'Browse StreamSets pipelines (sources, transformations, destinations, fragments) and extract their reports',
+        children: [
+          { key: 'viewStreamsetsSecrets', label: 'View Passwords & Secrets', description: 'Reveal hidden passwords, keys and secret resource files in pipelines. Every reveal is written to the audit log' },
+        ],
+      },
     ],
   },
   {

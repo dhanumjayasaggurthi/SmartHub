@@ -27,7 +27,7 @@ const TITLES = {
 };
 
 const SUBTITLES = {
-  write:     'Say what the message needs to cover. It will look the portal up before it writes. Nothing is sent — the draft lands in the editor for you to edit.',
+  write:     'Say what the message needs to cover. It will look the portal up before it writes. Nothing is sent: the draft lands in the editor for you to edit.',
   whats_new: 'Built from the items you picked. Anything without a summary gets looked up in the portal knowledge base first.',
   subject:   'The body is left exactly as it is.',
 };
@@ -215,7 +215,7 @@ export const AIDraftModal = ({
       )}
 
       {busy && !result && (
-        <p className={`${CLS.hint} mt-3.5`}>Writing the draft — usually a few seconds.</p>
+        <p className={`${CLS.hint} mt-3.5`}>Writing the draft. This usually takes a few seconds.</p>
       )}
 
       {result && (
@@ -247,7 +247,7 @@ export const AIDraftModal = ({
               />
               <span className="font-johnson-text text-[12.5px] text-jj-gray-07 leading-snug">
                 Also fill the template blocks
-                {result.headline && <> — headline “{result.headline}”</>}
+                {result.headline && <>, headline “{result.headline}”</>}
                 {result.banner_title && <>, banner “{result.banner_title}”</>}
               </span>
             </label>
@@ -257,7 +257,7 @@ export const AIDraftModal = ({
             {result.looked_up?.length
               ? `Written after reading ${lookupLine(result.looked_up)}. `
               : 'Written without looking anything up. '}
-            Read it before you send it — it can still get a date wrong.
+            Read it before you send it. It can still get a date wrong.
           </p>
         </div>
       )}
@@ -269,31 +269,34 @@ export const AIDraftModal = ({
 export const AIToolbar = ({ hasBody, busy, onPick }) => (
   <div className="flex flex-wrap items-center gap-1.5">
     <button
+      type="button"
       onClick={() => onPick('write')}
       disabled={busy}
-      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-jj-gray-02
-                 font-johnson-text text-[11.5px] text-jj-gray-07 hover:border-jj-gray-04
-                 disabled:opacity-50"
+      className="cc-ai flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] font-johnson-text text-[12px] font-medium
+                 text-white shadow-[0_10px_22px_-14px_rgba(140,59,187,0.8)] transition-transform hover:-translate-y-0.5
+                 disabled:opacity-50 disabled:hover:translate-y-0"
       title="Write this message from a short instruction"
     >
-      <Icon src={aiIcon} className="w-3 h-3" tone="red" />Draft with AI
+      <Icon src={aiIcon} className="w-3 h-3" tone="white" />Write with AI
     </button>
     <button
+      type="button"
       onClick={() => onPick('whats_new')}
       disabled={busy}
-      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-jj-gray-02
-                 font-johnson-text text-[11.5px] text-jj-gray-07 hover:border-jj-gray-04
-                 disabled:opacity-50"
+      className="px-2.5 py-1 rounded-full border border-jj-violet-03/25 bg-jj-violet-03/[0.04] font-johnson-text
+                 text-[11px] text-jj-violet-03 hover:bg-jj-violet-03/10 disabled:opacity-40"
       title="Announce everything that has shipped and not been announced yet"
     >
       What&rsquo;s new
     </button>
     {REWORK.map(([id, label]) => (
       <button
+        type="button"
         key={id}
         onClick={() => onPick(id)}
         disabled={busy || !hasBody}
-        className={CLS.chipBtn}
+        className="px-2.5 py-1 rounded-full border border-jj-violet-03/25 bg-jj-violet-03/[0.04] font-johnson-text
+                   text-[11px] text-jj-violet-03 hover:bg-jj-violet-03/10 disabled:opacity-35"
         title={hasBody ? `${label} the current message` : 'Write something first'}
       >
         {label}

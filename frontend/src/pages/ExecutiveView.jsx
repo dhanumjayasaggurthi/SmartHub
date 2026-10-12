@@ -178,25 +178,36 @@ async function loadTrend(ruleId, deltaMode = false) {
 // bucket's `rules` count is how many rules actually reported that day, not
 // the size of the scope. Buckets covering fewer than half the scope are
 // flagged as partial so the delta doesn't get read as a real movement.
+// One bar per month: each rule's runs in a month are averaged first, then
+// those per-rule numbers are averaged, so a rule that ran 3 times that month
+// doesn't outweigh one that ran once. `date` keeps the latest run in the month.
 function averageSeries(series) {
-  const byDate = new Map();
-  series.forEach(points => {
+  const avg = (a) => a.reduce((s, n) => s + n, 0) / a.length;
+  const byMonth = new Map(); // 'YYYY-MM' -> { date, perRule: Map(ruleIdx -> [vals]) }
+  series.forEach((points, i) => {
     (points || []).forEach(p => {
       const n = numOrNull(p?.pass_percentage);
-      if (!p?.date || n === null) return;
-      if (!byDate.has(p.date)) byDate.set(p.date, []);
-      byDate.get(p.date).push(n);
+      const dt = parseRunDate(p?.date);
+      if (!dt || n === null) return;
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      if (!byMonth.has(key)) byMonth.set(key, { date: p.date, perRule: new Map() });
+      const b = byMonth.get(key);
+      if (parseRunDate(b.date) < dt) b.date = p.date;
+      if (!b.perRule.has(i)) b.perRule.set(i, []);
+      b.perRule.get(i).push(n);
     });
   });
   const total = series.length || 1;
-  return [...byDate.entries()]
-    .map(([date, vals]) => ({
-      date,
-      pass_percentage: Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10,
-      rules: vals.length,
-      partial: vals.length < total / 2,
-    }))
-    .filter(p => parseRunDate(p.date))
+  return [...byMonth.values()]
+    .map(({ date, perRule }) => {
+      const vals = [...perRule.values()].map(avg);
+      return {
+        date,
+        pass_percentage: Math.round(avg(vals) * 10) / 10,
+        rules: vals.length,
+        partial: vals.length < total / 2,
+      };
+    })
     .sort((a, b) => parseRunDate(a.date) - parseRunDate(b.date));
 }
 
@@ -621,7 +632,7 @@ function DrillItem({ item, selected, onClick, severity, index }) {
           {item.label}
         </span>
         <span className="font-johnson-display text-[12.5px] font-bold flex-shrink-0" style={{ color }}>
-          {item.pass === null ? '—' : `${item.pass}%`}
+          {item.na ? 'NA' : item.pass === null ? '—' : `${item.pass}%`}
         </span>
       </div>
       <div className="flex items-center gap-2 mt-2">
@@ -929,6 +940,8 @@ export default function ExecutiveView({
 
   useEffect(() => () => clearTimeout(replayTimer.current), []);
   const [rules, setRules]     = useState([]);
+  // Domains parked in DQ_RULE_INPUT with no rule yet (RULE_ID null). Shown as NA.
+  const [emptyDomains, setEmptyDomains] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -951,7 +964,11 @@ export default function ExecutiveView({
     Promise.all([fetchRuleInput(), fetchRuleStats(deltaMode).catch(() => ({}))])
       .then(([input, stats]) => {
         if (cancelled) return;
-        setRules(input.filter(r => isTrue(r.is_active)).map(r => ({
+        const active = input.filter(r => isTrue(r.is_active));
+        const real = active.filter(r => r.rule_id);
+        const used = new Set(real.map(r => r.domain || 'Unassigned'));
+        setEmptyDomains([...new Set(active.filter(r => !r.rule_id && r.domain).map(r => r.domain))].filter(d => !used.has(d)));
+        setRules(real.map(r => ({
           ...r,
           // /api/rules is the source of truth for severity + latest score;
           // fall back to the rule-input row when a column is present there.
@@ -1015,8 +1032,11 @@ export default function ExecutiveView({
   };
 
   const domainItems = useMemo(
-    () => rollup(byDim, 'domain', rows => `${rows.length} ${rows.length === 1 ? 'rule' : 'rules'}`),
-    [byDim]
+    () => [
+      ...rollup(byDim, 'domain', rows => `${rows.length} ${rows.length === 1 ? 'rule' : 'rules'}`),
+      ...(dim ? [] : emptyDomains.map(d => ({ value: d, label: d, pass: null, na: true, meta: '0 rules' }))),
+    ],
+    [byDim, dim, emptyDomains]
   );
   const ruleItems = useMemo(
     () => dom
@@ -1068,8 +1088,11 @@ export default function ExecutiveView({
   const domainStats = useMemo(() => {
     const g = {};
     rules.forEach(r => { const v = r.domain || 'Unassigned'; (g[v] = g[v] || []).push(r); });
-    return Object.entries(g).map(([d, rows]) => ({ domain: d, pass: avgOf(rows) }));
-  }, [rules]);
+    return [
+      ...Object.entries(g).map(([d, rows]) => ({ domain: d, pass: avgOf(rows) })),
+      ...emptyDomains.map(d => ({ domain: d, pass: null, na: true })),
+    ];
+  }, [rules, emptyDomains]);
   // No CRITICAL rules exist in every instance, so treat HIGH as at-risk too.
   const escalated = rules.filter(r => ['CRITICAL', 'HIGH'].includes(String(r.severity || '').toUpperCase()));
   const escalatedAtRisk = escalated.filter(r => r.pass_percentage !== null && Number(r.pass_percentage) < TARGET).length;
@@ -1270,7 +1293,7 @@ export default function ExecutiveView({
                   {domainStats.map(d => (
                     <div
                       key={d.domain}
-                      title={`${d.domain} · ${d.pass === null ? '—' : `${d.pass}%`}`}
+                      title={`${d.domain} · ${d.na ? 'NA' : d.pass === null ? '—' : `${d.pass}%`}`}
                       style={{
                         flex: 1, height: 18, borderRadius: 3,
                         backgroundColor: passColor(d.pass),

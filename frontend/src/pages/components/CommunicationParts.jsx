@@ -8,6 +8,7 @@ import closeIcon    from "/icons/JJ_Icon_Close.svg";
 import searchIcon   from "/icons/JJ_Icon_Search_RGB.svg";
 import communityIcon from "/icons/JJ_Icon_Community_RGB.svg";
 import personIcon   from "/icons/JJ_Icon_Person_RGB.svg";
+import linkIcon     from "/icons/JJ_Icon_Link_RGB.svg";
 
 export const CLS = {
   card:      'bg-white border border-jj-gray-02 rounded-2xl',
@@ -25,6 +26,15 @@ export const CLS = {
              'font-medium hover:bg-jj-maroon-05 transition-colors disabled:opacity-60',
   chipBtn:   'px-1.5 py-1 rounded-md border border-jj-gray-02 font-johnson-text text-[11px] ' +
              'text-jj-gray-07 hover:border-jj-gray-04 disabled:opacity-40',
+};
+
+/* Example text for each message type — the compose fields' placeholders and
+   the welcome screen's sample banners, so the two never disagree. */
+export const PLACEHOLDERS = {
+  update:      { bannerTitle: 'Release Notes',          bannerSubtitle: 'GRA Data Quality Engine',        headline: "What's new this month",        subject: 'New in SmartHub: ' },
+  warning:     { bannerTitle: 'Action required',        bannerSubtitle: 'SmartHub Alert!',                headline: 'Please review before Friday',  subject: 'Your SmartHub access needs re-approval' },
+  maintenance: { bannerTitle: 'Scheduled maintenance',  bannerSubtitle: 'Day 01 Month, Time - Time PM ET', headline: 'SmartHub will be unavailable', subject: 'Planned downtime this Saturday' },
+  custom:      { bannerTitle: 'SmartHub information session', bannerSubtitle: 'Updates to SmartHub',      headline: 'Thanks for joining us',        subject: "Recap from today's session" },
 };
 
 /* Several of the J&J SVGs ship with a baked-in white fill, which is invisible
@@ -257,33 +267,50 @@ export const BodyEditor = ({ value, onChange, placeholder, rows = 9, hint, inval
     restore(caret, caret);
   };
 
-  const tools = [
-    { key: 'bold',   label: 'B',  title: 'Bold  **text**',        run: () => surround('**'), className: 'font-bold' },
-    { key: 'italic', label: 'I',  title: 'Italic  *text*',        run: () => surround('*'),  className: 'italic' },
-    { key: 'head',   label: 'H',  title: 'Heading  ## text',      run: heading },
-    { key: 'bullet', label: '•',  title: 'Bulleted list  - item', run: () => stampLines(() => '- ') },
-    { key: 'number', label: '1.', title: 'Numbered list  1. item', run: () => stampLines((n) => `${n}. `) },
-    { key: 'link',   label: '🔗', title: 'Link  [text](url)',      run: link },
+  // Grouped as they read in the toolbar: inline marks | blocks | link.
+  const groups = [
+    [
+      { key: 'bold',   label: 'B', title: 'Bold  **text**',   run: () => surround('**'), className: 'font-bold' },
+      { key: 'italic', label: 'I', title: 'Italic  *text*',   run: () => surround('*'),  className: 'italic' },
+    ],
+    [
+      { key: 'head',   label: 'H',       title: 'Heading  ## text',       run: heading },
+      { key: 'bullet', label: '• List',  title: 'Bulleted list  - item',  run: () => stampLines(() => '- ') },
+      { key: 'number', label: '1. List', title: 'Numbered list  1. item', run: () => stampLines((n) => `${n}. `) },
+    ],
+    [
+      { key: 'link', icon: linkIcon, title: 'Link  [text](url)', run: link },
+    ],
   ];
 
   return (
-    <div>
-      <div className="flex items-center gap-1 flex-wrap mb-1.5">
-        {tools.map((tool) => (
-          <button
-            key={tool.key}
-            type="button"
-            onClick={tool.run}
-            title={tool.title}
-            aria-label={tool.title}
-            className={`w-[30px] h-[28px] rounded-lg border border-jj-gray-02 bg-white
-                        font-johnson-text text-[12.5px] text-jj-gray-07
-                        hover:border-jj-gray-04 hover:text-jj-gray-08 ${tool.className || ''}`}
-          >
-            {tool.label}
-          </button>
+    <div
+      className={`rounded-xl border bg-white overflow-hidden transition-shadow ${invalid
+        ? 'border-jj-red ring-[3px] ring-jj-red/10'
+        : 'border-jj-gray-03 focus-within:border-jj-red focus-within:ring-[3px] focus-within:ring-jj-red/[0.08]'}`}
+    >
+      <div className="flex items-center gap-0.5 flex-wrap px-2 py-1.5 border-b border-jj-gray-02 bg-[#fbfaf8]"
+           role="toolbar" aria-label="Formatting">
+        {groups.map((group, g) => (
+          <React.Fragment key={g}>
+            {g > 0 && <span className="w-px h-4 bg-jj-gray-03 mx-1.5" aria-hidden="true" />}
+            {group.map((tool) => (
+              <button
+                key={tool.key}
+                type="button"
+                onClick={tool.run}
+                title={tool.title}
+                aria-label={tool.title}
+                className={`min-w-[28px] h-7 px-2 rounded-[7px] flex items-center justify-center font-johnson-text
+                            text-[12.5px] text-jj-gray-07 hover:bg-jj-gray-02 hover:text-jj-gray-08 transition-colors
+                            ${tool.className || ''}`}
+              >
+                {tool.icon ? <Icon src={tool.icon} className="w-3.5 h-3.5" tone="gray" /> : tool.label}
+              </button>
+            ))}
+          </React.Fragment>
         ))}
-        {hint && <span className={`${CLS.hint} ml-auto`}>{hint}</span>}
+        {hint && <span className={`${CLS.hint} ml-auto pl-2 text-[10.5px] ${invalid ? 'text-jj-red' : ''}`}>{hint}</span>}
       </div>
       <textarea
         ref={area}
@@ -291,7 +318,9 @@ export const BodyEditor = ({ value, onChange, placeholder, rows = 9, hint, inval
         onChange={(e) => onChange(e.target.value)}
         rows={rows}
         placeholder={placeholder}
-        className={`${CLS.input} resize-y leading-relaxed ${invalid ? 'border-jj-red' : ''}`}
+        aria-invalid={invalid || undefined}
+        className="block w-full min-h-[210px] px-3.5 py-3 border-0 outline-none resize-y bg-white font-johnson-text
+                   text-[13.5px] leading-[1.65] text-jj-gray-08 placeholder:text-jj-gray-04"
       />
     </div>
   );
@@ -323,6 +352,11 @@ const initials = (name, email) => {
   const parts = source.split(/[\s,]+/).filter(Boolean);
   return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase() || '?';
 };
+
+// A steady colour per address, so the same person always looks the same.
+const CHIP_COLORS = ['#eb1700', '#0f68b2', '#8c3bbb', '#328714', '#ff6017', '#9e0000', '#004685', '#541980'];
+const chipColor = (addr) => CHIP_COLORS[
+  [...String(addr).toLowerCase()].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % CHIP_COLORS.length];
 
 const NONE = 'NONE';
 const NAME_KEY = (email) => `dir_name_${email}`;
@@ -663,29 +697,39 @@ export const RecipientField = ({
   };
 
   return (
-    <div className="flex items-start gap-2.5">
-      <label className="w-7 flex-none pt-2 font-johnson-text text-[12.5px] text-jj-gray-06">{label}</label>
+    <div className="flex items-start gap-2.5 py-1 border-b border-dashed border-jj-gray-02 last:border-b-0">
+      <label className="w-8 flex-none pt-[11px] font-johnson-text text-[12px] font-medium text-jj-gray-06">{label}</label>
       <div className="flex-1 min-w-0 relative">
         <div
-          className={`flex flex-wrap items-center gap-1.5 px-2 py-1.5 rounded-[10px]
-                      bg-white border ${hasInvalid ? 'border-jj-red' : 'border-jj-gray-03'}`}
+          className={`flex flex-wrap items-center gap-1.5 min-h-[40px] py-1 transition-shadow ${
+            hasInvalid ? 'shadow-[inset_0_-2px_0_rgba(235,23,0,0.55)]' : ''}`}
         >
           {parsed.map((addr, index) => {
             const ok = ADDR_RE.test(addr);
             return (
               <span
                 key={`${addr}-${index}`}
-                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md font-johnson-text text-[12px] border max-w-full
-                            ${ok ? 'bg-jj-gray-01 text-jj-gray-08 border-jj-gray-02'
-                                 : 'bg-jj-red/[0.07] text-jj-maroon-05 border-jj-red/30'}`}
+                title={ok ? addr : `${addr} is not a valid address`}
+                className={`cc-pop inline-flex items-center gap-1.5 pl-1 pr-1.5 py-1 rounded-full font-johnson-text text-[12px] max-w-full
+                            transition-colors ${ok ? 'bg-jj-gray-01 text-jj-gray-08 hover:bg-jj-gray-02'
+                                 : 'bg-jj-red/[0.08] text-jj-maroon-05 shadow-[inset_0_0_0_1px_rgba(235,23,0,0.25)]'}`}
               >
+                <span
+                  aria-hidden="true"
+                  className="w-[22px] h-[22px] rounded-full flex items-center justify-center flex-none text-white
+                             font-johnson-display font-bold text-[9.5px]"
+                  style={{ background: ok ? chipColor(addr) : '#9e0000' }}
+                >
+                  {ok ? initials('', addr.split('@')[0].replace(/[._-]+/g, ' ')) : '!'}
+                </span>
                 <span className="truncate max-w-[230px]">{addr}</span>
                 <button
+                  type="button"
                   onClick={() => removeAt(index)}
                   aria-label={`Remove ${addr}`}
-                  className="opacity-50 hover:opacity-100 flex"
+                  className="w-4 h-4 rounded-full flex items-center justify-center opacity-60 hover:opacity-100 hover:bg-white"
                 >
-                  <Icon src={closeIcon} className="w-2.5 h-2.5" tone="gray" />
+                  <Icon src={closeIcon} className="w-2 h-2" tone="gray" />
                 </button>
               </span>
             );
@@ -712,8 +756,8 @@ export const RecipientField = ({
             autoCapitalize="none"
             spellCheck={false}
             name={`recipients-${listId}`}
-            className="flex-1 min-w-[130px] border-0 outline-none bg-transparent px-0.5 py-1.5
-                       font-johnson-text text-[13px] text-jj-gray-08"
+            className="flex-1 min-w-[160px] border-0 outline-none bg-transparent px-0.5 py-1.5
+                       font-johnson-text text-[13px] text-jj-gray-08 placeholder:text-jj-gray-05"
           />
         </div>
 
@@ -1044,7 +1088,7 @@ export const RecipientPicker = ({ onClose, onAdd, allowedDomains = [] }) => {
                 autoFocus
                 value={term}
                 onChange={(e) => setTerm(e.target.value)}
-                placeholder="Name or email — at least two characters"
+                placeholder="Name or email (at least two characters)"
                 className={`${CLS.input} pl-8`}
               />
             </div>
@@ -1091,7 +1135,7 @@ export const RecipientPicker = ({ onClose, onAdd, allowedDomains = [] }) => {
             })}
             {activeId === 'search' && shown.length >= SEARCH_LIMIT && (
               <p className={`${CLS.hint} px-2.5 py-2`}>
-                First {SEARCH_LIMIT} matches — keep typing to narrow it down.
+                First {SEARCH_LIMIT} matches. Keep typing to narrow it down.
               </p>
             )}
           </div>

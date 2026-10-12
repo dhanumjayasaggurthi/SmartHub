@@ -63,7 +63,7 @@ _CONFIG: Dict[str, Any] = {
     "smtp_host": "localhost",
     "smtp_port": 25,
     "smtp_timeout": 60,
-    "sender": "donotreply@gra-smarthub-dqe.jnj.com",
+    "sender": "gra-smarthub-dev-donotreply@its.jnj.com",
     "reply_to": "",
     # Empty list = any domain. Populate it to stop an admin from accidentally
     # mailing the whole outside world from a portal account.
@@ -1894,6 +1894,13 @@ def get_history(
             params + page_params + page_params + [limit, offset],
         ).fetchall()
 
+        type_where, type_params = _history_with_status(*_history_where(search, ""), status)
+        type_clause = f"WHERE {' AND '.join(type_where)}" if type_where else ""
+        by_type = conn.execute(
+            f"SELECT category, COUNT(*) AS n FROM email_history {type_clause} GROUP BY category",
+            type_params,
+        ).fetchall()
+
     head = rows[0]
     counts = {k: head[k] for k in ("all_n", "sent_n", "failed_n", "test_n")}
     total = head["total"]
@@ -1911,6 +1918,7 @@ def get_history(
             "failed": counts["failed_n"] or 0,
             "test": counts["test_n"] or 0,
         },
+        "by_category": {r["category"]: r["n"] for r in by_type},
     }
 
 
@@ -1952,7 +1960,7 @@ def download_history_file(
     if index < 0 or index >= len(paths):
         raise HTTPException(
             status_code=404,
-            detail="That file is no longer stored — only its name was kept",
+            detail="That file is no longer stored. Only its name was kept",
         )
 
     path = paths[index]
@@ -2153,7 +2161,7 @@ def cancel_scheduled(scheduled_id: str, auth: dict = Depends(require_auth)):
                 raise HTTPException(status_code=404, detail="Scheduled message not found")
             raise HTTPException(
                 status_code=409,
-                detail=f"That message is already {current['status']} — too late to cancel",
+                detail=f"That message is already {current['status']}, too late to cancel",
             )
 
     shutil.rmtree(ATTACH_DIR / _safe_filename(scheduled_id), ignore_errors=True)

@@ -343,11 +343,20 @@ Every send is written to the audit log.
 ## Audit Log
 
 Who is signed in right now plus a log of every sign-in, page view, role change
-and data/admin action. Two views: Stream (default, the event list) and
-Analytics (charts). Filters: search text, category (Roles, Access, Data,
-Navigation, Admin), time range (last 24 hours, 7 days - the default, 30 days,
-all time), user, and dates. Saved views: Security review, Access issues, Admin
-trail, Rule decisions, Navigation. Results export to CSV.
+and data/admin action. The banner at the top shows today's activity by hour
+(Eastern) on a 24-hour dial. Three views: Stream (default, the event timeline),
+Analytics (charts: today by hour, category mix, 30-day volume, weekday x hour
+heatmap, top actions, most active people, sensitive events) and People (one
+card per person with their event count, sensitive count and recent activity).
+Filters: search text, category (Roles, Access, Data, Navigation, Admin), action
+type, time range (last 24 hours, 7 days - the default, 30 days, all time), and
+under Filters: person and dates. Saved views: Security review, Secrets viewed,
+Access issues, Admin trail, Rule decisions. "Sensitive" events (role deleted or
+removed, secret viewed, log entry deleted, audit edit mode opened) are flagged
+and listed under "Needs a look". Clicking an event opens its details with the
+same person's events around it. Live mode (on by default) adds new events as
+they happen. Results export to CSV. Every filter is in the URL, so a copied
+link opens the same view.
 
 ## What Regwiz can and can't do
 

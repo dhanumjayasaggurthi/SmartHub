@@ -1,6 +1,6 @@
 # GRA SmartHub
 
-Data quality and governance platform. React frontend talking to a FastAPI backend, plus two standalone pieces that run on their own schedules: the Source → Snowflake validation scripts and the email reporting jobs.
+Data quality and governance platform. React frontend talking to a FastAPI backend, with native Enterprise Agentic RAG/evaluation, plus two standalone pieces that run on their own schedules: the Source → Snowflake validation scripts and the email reporting jobs.
 
 ## Layout
 
@@ -57,6 +57,10 @@ SmartHub/
 │   ├── indexer.py                 # Data Studio, Index Health tab
 │   ├── nipo.py
 │   ├── postgres_query_runner.py
+│   ├── rag.py                     # native Enterprise Agentic RAG orchestration + /rag API
+│   ├── rag_evaluation.py          # versioned datasets, runs and quality metrics
+│   ├── AGENTIC_RAG.md             # detailed RAG architecture, source config and rollout guide
+│   ├── requirements-rag-eval.txt  # optional Ragas/datasets dependencies; not needed in production
 │   ├── requirements.txt
 │   ├── review.py
 │   ├── s3_explorer.py             # Data Studio, S3 tab
@@ -148,7 +152,8 @@ SmartHub/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── LogoutPage.jsx
 │   │   │   ├── RAGPage.jsx
-│   │   │   ├── RimDocsAgentic.jsx
+│   │   │   ├── RAGEvaluation.jsx  # native /rag/evaluation regression/evaluation workspace
+│   │   │   ├── RimDocsAgentic.jsx # native React Agentic RAG chat/configuration UI
 │   │   │   ├── RimDocsRAG.jsx
 │   │   │   ├── Unstructured.jsx
 │   │   │   └── UserManagement.jsx
@@ -185,6 +190,8 @@ SmartHub/
 │   ├── delta_wrapper.sh
 │   ├── quarterly_wrapper.sh
 │   └── requirements.txt
+├── .github/workflows/
+│   └── agentic-rag-ci.yml         # RAG backend tests + frontend lint/build
 ├── .gitignore
 └── Readme.md
 ```
@@ -194,7 +201,7 @@ SmartHub/
 ## Stack
 
 - Frontend: React 19, Vite 7, React Router 7, Tailwind 3, MSAL for Azure AD login, Recharts, @xyflow/react, three.js + @react-three/fiber/drei (assistant avatar, lazy-loaded)
-- Backend: FastAPI on Uvicorn, Pandas, Snowflake connector (RSA key-pair auth), python-oracledb, psycopg2, jaydebeapi/JPype (Denodo), RapidFuzz for fuzzy matching, the OpenAI SDK against Azure OpenAI for the assistant
+- Backend: FastAPI on Uvicorn, Pandas, Snowflake connector (RSA key-pair auth), python-oracledb, psycopg2, jaydebeapi/JPype (Denodo), RapidFuzz for fuzzy matching, and the OpenAI SDK against Azure OpenAI for the assistant and native Agentic RAG
 - Data: Snowflake is the main store, Oracle is where the IT validation scripts pull from, Postgres backs the unstructured explorers (EPOD, Q!, Nipocalimab, FDA) and the PG Query Runner. The portal's own state (roles, audit log, Communication Center, Data API, Data Studio history, What's New, assistant memory) lives in a separate PostgreSQL database, schema `smarthub_core`
 - Auth: Azure AD, RBAC checked on both the frontend routes and backend endpoints
 
@@ -206,7 +213,7 @@ SmartHub/
 - A Snowflake account with RSA key-pair auth already set up (this app doesn't use password auth to Snowflake)
 - Source DB client libs if you're running the DQ validation scripts locally — `oracledb` may need Instant Client in thick mode depending on your DB version
 - An Azure AD app registration (client ID + tenant ID) for login, with `User.Read`, `User.Read.All` and `Group.Read.All` delegated permissions and admin consent granted (the backend reads group membership to resolve roles)
-- An Azure OpenAI deployment if you want the AI assistant to answer at all (chat + embeddings, optionally TTS for the avatar voice). Everything else works without it, the assistant just errors.
+- An Azure OpenAI deployment if you want the AI assistant or native Agentic RAG to answer (chat, plus embeddings where Data API semantic retrieval uses them; TTS is optional for avatar voice). The non-AI portal features still work without it.
 
 ## Getting it running
 
@@ -245,7 +252,7 @@ npm install
 npm run dev
 ```
 
-Runs on port 3000. Everything environment-specific lives in `frontend/.env` — API base URL, the RAG service URLs, the AD group names, and the MSAL client ID/authority. `msalConfig.js` just reads `VITE_MSAL_CLIENT_ID` / `VITE_MSAL_AUTHORITY`, so you switch tenants by editing `.env`, not code.
+Runs on port 3000. Everything environment-specific lives in `frontend/.env` — API base URL, legacy EPOD/RIMDocs RAG service URLs, the AD group names, the MSAL client ID/authority, and the native Agentic RAG rollout flag. `RimDocsAgentic.jsx` talks to the SmartHub FastAPI `/rag` endpoints through the existing authenticated API/SSE client; `VITE_API_RIMDOCS_AGENTIC_URL` is now only used by the temporary legacy rollback path. `msalConfig.js` just reads `VITE_MSAL_CLIENT_ID` / `VITE_MSAL_AUTHORITY`, so you switch tenants by editing `.env`, not code.
 
 ### DQ_IT_Validation
 
@@ -285,10 +292,10 @@ None of these are in the repo, all gitignored:
     - `snowflake_query_runner` — Data Studio's Snowflake tab. Anything left out falls back to the main `snowflake` section, so it can be as small as `allow_writes`. `SFQR_*` env vars work too. `SFQR_ALLOW_WRITES=false` makes the tab read-only whatever the role.
     - Data Studio's Index Health tab has no section here: it connects with the `[postgresql.<env>]` sections of `data_validation_config.ini`, and `INDEX_HEALTH_*` env vars tune builds (see `.env.example`).
     - `s3_explorer` — Data Studio's S3 tab: region, credentials (or the host's role if left blank) and a bucket allow-list. `S3X_*` env vars work too. Uploads and deletes stay off unless turned on.
-- **`backend/.env`** — the portal database (`SMARTHUB_DB_DSN`, required, plus pool and timeout settings), Azure OpenAI (chat, embeddings, TTS), assistant behaviour, optional Redis for rate limiting, `PGQR_*` fallbacks for the Postgres connection, and `CORS_ORIGINS`. Copy `backend/.env.example` and work through it. For RDS put `sslmode=require` in the DSN.
+- **`backend/.env`** — the portal database (`SMARTHUB_DB_DSN`, required, plus pool and timeout settings), Azure OpenAI (chat, embeddings, TTS), assistant behaviour, native Agentic RAG limits/REST allowlist, optional Redis for rate limiting, `PGQR_*` fallbacks for the Postgres connection, and `CORS_ORIGINS`. Copy `backend/.env.example` and work through it. For RDS put `sslmode=require` in the DSN. External RAG REST sources require `RAG_ALLOWED_API_HOSTS`; credentials are referenced by `RAG_SECRET_*` environment-variable name and are never stored in RAG metadata.
 - **`backend/data_validation_config.ini`** — per-source, per-environment credentials for the Data Validation feature (`[insight7.dev]`, `[rimdocs.qa]`, `[postgresql.prod]` and so on; a suffix-less section is the fallback for any env without its own). Copy `backend/data_validation_config.example` as a starting point. Note the code's error message calls that file `data_validation_config.example.ini` — the one in the repo has no `.ini` on the end.
 - **Semantic search** — no config file. Embedding models, per-column model registrations, response templates and per-alias settings are managed in the portal (Data API Export > Semantic search) and stored in the portal database with everything else; the core migration creates their tables.
-- **`frontend/.env`** — see `frontend/.env.example`.
+- **`frontend/.env`** — see `frontend/.env.example`. Native Agentic RAG is on by default; `VITE_RAG_NATIVE_ENABLED=false` temporarily restores the legacy RIMDocs Agentic iframe during rollout.
 - **`DQ_IT_Validation/validation_config.json`** — see that module's own readme for the full field list.
 
 ### Where the portal keeps its state
@@ -302,8 +309,10 @@ Everything the portal writes lives in PostgreSQL, schema `smarthub_core` (overri
 - Data Studio's Snowflake history and saved queries (`sf_*`)
 - What's New items and the last scan (`release_notes`, `release_note_snapshots`)
 - Assistant long-term memory (`assistant_user_memory`)
+- Native Agentic RAG sources, profiles and user feedback (`rag_sources`, `rag_profiles`, `rag_feedback`)
+- Agentic RAG evaluation datasets, immutable run snapshots and case-level results (`rag_eval_*`)
 
-The schema is defined by the files in `backend/migrations/smarthub_core/` (`V001__…`, `V002__…`), applied in order and recorded in `schema_migrations`. Never edit an applied file; a change goes in a new `V003__what_it_does.sql`.
+The schema is defined by the files in `backend/migrations/smarthub_core/`, applied in order and recorded in `schema_migrations`. Agentic RAG is added by `V004__agentic_rag.sql`. Never edit an applied migration; any later schema change must go in the next new versioned migration file.
 
 On disk, next to `app.py`, the backend still creates:
 
@@ -336,6 +345,7 @@ Backend: `uvicorn app:app --host 0.0.0.0 --port 8000` (drop `--reload` outside o
 Frontend dev: `npm run dev`
 Frontend prod: `npm run build`, then serve `dist/`
 Assistant tests: `python -m pytest assistant/tests -q` from `backend/`
+Agentic RAG unit/security tests: `python -m pytest tests/test_rag.py tests/test_data_api_retrieval.py -q` from `backend/`
 Assistant live eval (hits Azure OpenAI): `python -m assistant.tests.eval_live --workers 6` from `backend/`, add `--role it_viewer` etc. to test another role
 Rebuild the assistant KB: `python -m assistant.build_kb` from `backend/`
 Health check: `GET /health` (includes the portal database and its connection pool)
@@ -377,6 +387,8 @@ One caveat worth telling admins: when you change someone's role, the backend pic
     - `data_api_mcp.py` — optional MCP server (`list_tables`, `describe_table`, `search`) mounted in-process at `/data-api/mcp/{api_id}`. Off unless `DATA_API_MCP_ENABLED=1` and `requirements-mcp.txt` is installed (it needs Pydantic 2).
     - Tests: `cd backend && python -m pytest tests -q`. The PostgreSQL integration tests run when `DATA_API_TEST_PG_DSN` points at a disposable database with pgvector.
     - Local demo and evidence: `scripts/retrieval_demo.py` (`setup`, `serve`, `evidence`) seeds a synthetic corpus into a local pgvector database, runs the Data API alone against it in an isolated `backend/.retrieval_demo/` folder, and writes an evidence pack (every request/response, EXPLAIN plans, latency, activity log, test results).
+- `rag.py` (`/rag`) — native Enterprise Agentic RAG. Reuses Data API retrieval, the existing JDBC/database connector registry and permission-gated SmartHub read-only tools; also supports explicitly allowlisted HTTPS REST sources. Orchestration is bounded: rewrite/decompose/route → parallel retrieval → RRF → rerank → structured grounded generation → citation validation → claim verification → at most one repair/re-verification → verified answer or abstention.
+- `rag_evaluation.py` (`/rag/evaluation`) — versioned regression datasets, persisted evaluation runs/case results, deterministic retrieval/citation/grounding/tool/abstention/latency metrics and baseline comparison. Ragas is an optional adapter installed from `requirements-rag-eval.txt`, not a production runtime dependency.
 - `unstructured.py` (`/api/unstructured`) — the RimDocs side of the Unstructured Explorer; hosts the Snowflake ("SF") query runner
 - `postgres_query_runner.py` (`/api/postgres`) — the Postgres ("PG") query runner: full SQL (not just SELECT) against a configured Postgres database, with destructive-statement confirmation, server-side cursor pagination for large results, cancellation, and its own database/schema/table/column explorer endpoints
 - `snowflake_query_runner.py` (`/api/snowflake`) — Data Studio's Snowflake tab: full SQL with destructive-statement confirmation, background jobs with paging and cancel, the object explorer, saved queries and history, the editable row grid and the Table Copier
@@ -398,6 +410,35 @@ The four Postgres explorer routers (`epod`, `haq`, `nipo`, `fda`) share the sing
 Every Unstructured router needs `viewUnstructured` plus its document-set permission: `viewUnstructuredRimDocs` for `/api/unstructured` (and `/api/postgres`, which also needs `runPostgresQueryRunner`), `viewUnstructuredVR` + `viewUnstructuredVRInternal` for the Virtual Regulator router, `viewUnstructuredVR` + `viewUnstructuredVRExternal` for `/api/vr-external`, `viewUnstructuredIMMBOT`, `viewUnstructuredHAQ`, `viewUnstructuredEPOD`, `viewUnstructuredNipo` and `viewUnstructuredFDA` for the rest. The Explore / Data table / Breakdown sub-tab permissions (`viewUnstructuredEPODTable` and so on) only hide tabs in the UI; those tabs share endpoints, so the API checks the document set, not the sub-tab.
 
 The Data Studio routers need `viewDataStudio` plus their own tab permission: `runSnowflakeQueryRunner` for `/api/snowflake`, `viewPGindexer` for `/index-health` (plus `buildPGindexer` to start or cancel builds), `runS3Explorer` for `/api/s3`.
+
+## Enterprise Agentic RAG
+
+The **RIMDocs Agentic** tab is now a native SmartHub React/FastAPI capability rather than a Streamlit iframe. The existing `/rag` page and its RIMDocs/EPOD legacy tabs remain in place; the native evaluation workspace is `/rag/evaluation`. The frontend uses the same MSAL-authenticated `apiClient.js` and SSE machinery as the rest of SmartHub, and the backend keeps RBAC enforcement server-side.
+
+Source configuration is portal-managed and intentionally capability-aware:
+
+- **Data API source** — points at an existing Data API export + alias. `mode=auto` uses the alias's existing semantic/hybrid retrieval configuration when available and otherwise falls back to safe live connector text search.
+- **Connector source** — reuses `data_validation_connectors.py` for existing Oracle/RIMDocs, PostgreSQL, Snowflake, Denodo JDBC, SQL Server/Grail JDBC, Databricks JDBC and other registered connectors. A generic JDBC source is not falsely treated as pgvector-capable.
+- **REST source** — HTTPS only, outbound host must be listed in `RAG_ALLOWED_API_HOSTS`, redirects are disabled, time/response-size limits apply, and any credential is referenced by a server-side `RAG_SECRET_*` variable rather than stored in metadata.
+- **SmartHub tools/plugins** — a profile may enable existing assistant tools that are read-only and allowed for the current user's permissions. Browser actions and preference-writing tools are excluded.
+
+A RAG profile controls its source IDs, source-only policy, decomposition, routing, candidate/final evidence budgets, reranking threshold, model overrides, permitted tools and verification policy. Configure sources/profiles from **RAGs → RIMDocs Agentic → Configure** (requires `manageDataAPIExports`); chat/evaluation use `viewRimDocsAgentic`.
+
+The grounding contract is fail-closed. Every evidence item receives a stable evidence ID; generation must return structured claims and cite those IDs. The backend rejects invented citation IDs, verifies each claim against its cited evidence, treats verifier/model failure as unavailable rather than faithful, permits at most one repair, verifies the repaired answer again, and abstains when a verification-required profile cannot produce a fully verified answer. Retrieved DB/API/tool content is explicitly treated as untrusted data, not model instructions.
+
+Evaluation lives at `/rag/evaluation`. Dataset versions are immutable; runs persist the profile/config snapshot and case-level evidence/citations. Deterministic metrics include retrieval recall/precision, Hit@K, MRR, source recall, citation validity, claim support/unsupported-claim rate, expected/forbidden tool behavior, abstention accuracy, verification rate and latency. Install `backend/requirements-rag-eval.txt` only in an evaluation environment if Ragas metrics are also wanted.
+
+First-time deployment:
+
+```bash
+cd backend
+python db.py migrate
+# start SmartHub, then create at least one source + active/default profile in the UI
+```
+
+Native React is the default. `VITE_RAG_NATIVE_ENABLED=false` is a temporary rollout rollback that renders the old RIMDocs Agentic service URL instead. Full configuration examples, source contracts, security controls and rollout notes are in **[`backend/AGENTIC_RAG.md`](backend/AGENTIC_RAG.md)**.
+
+The branch/PR validation workflow `.github/workflows/agentic-rag-ci.yml` compiles the RAG backend, runs the new grounding/security tests plus existing Data API retrieval tests, lints the changed React files and builds the Vite production bundle.
 
 ## The AI assistant
 
@@ -426,7 +467,7 @@ Sidebar is grouped: Workspace (Dashboard, Data quality `/dqe`, Data Type Validat
 A few pages are composites rather than routes of their own:
 
 - **DQ Engine** (`/dqe?check=…`) picks between three check types, filtered by permission: IT Checks (`IT_Checks`), Data Validation (`Data_Validation`, still marked beta) and Business Defined Checks (`Business_defined_checks`). The latter two render `DataValidation.jsx` and `BusinessDefinedChecks.jsx`.
-- **RAGs** (`/rag`) tabs between EPod RAG, RimDocs RAG and RimDocs Agentic, each pointed at its own service via `VITE_API_EPOD_URL` / `VITE_API_RIMDOCS_URL` / `VITE_API_RIMDOCS_AGENTIC_URL`.
+- **RAGs** (`/rag`) tabs between EPOD RAG, RimDocs RAG and **native RimDocs Agentic**. EPOD and legacy RimDocs still use `VITE_API_EPOD_URL` / `VITE_API_RIMDOCS_URL`; RimDocs Agentic uses the SmartHub backend `/rag` endpoints. `VITE_API_RIMDOCS_AGENTIC_URL` is retained only for the temporary `VITE_RAG_NATIVE_ENABLED=false` rollback. Agentic evaluation is the separate native route `/rag/evaluation`.
 - **Unstructured Explorer** (`/unstructured-explorer`) opens on a picker (`UnstructuredWelcome`) and then into one of nine document sets — Virtual Regulator, IMMBOT, MirAI, RMWCreate, Q!, Nipocalimab, RimDocs, EPOD, FDA & Others — selected with `?doctype=`. RimDocs has Explore / Data table / Domain breakdown tabs plus the SF and PG query runners (`runUnstructuredQueryRunner`, `runPostgresQueryRunner`); Virtual Regulator has Internal / External; IMMBOT has Explore / Data table / Breakdown; EPOD, Nipocalimab and FDA have Explore / Data table; MirAI and RMWCreate are placeholders.
   - Access is a three-level tree in User Management: `viewUnstructured` → one permission per document set (`viewUnstructuredVR`, `viewUnstructuredRimDocs`, …) → one per sub-tab (`viewUnstructuredVRInternal`, `viewUnstructuredRimDocsTable`, …); the two query runners sit under `viewUnstructuredRimDocs`. Document sets and sub-tabs the user can't open are hidden, the picker cards are numbered by what's shown, and a URL pointing at a hidden one falls back to the first allowed.
   - Roles and custom access saved before these permissions existed are upgraded on read (`with_unstructured_tabs` / `apply_user_overrides` in `auth.py`, mirrored in `RBACContext.jsx`): a missing child follows its parent, so nobody loses a tab until an admin edits the role.
@@ -440,7 +481,7 @@ A few pages are composites rather than routes of their own:
 - Backend behind nginx with TLS, run under systemd or supervisor, not `uvicorn --reload`.
     - **Run a single worker for now (`--workers 1`, the default).** A few things are still held in process memory — validated-token and resolved-role caches, the short-lived download/delta tokens, and running query jobs in the Snowflake, PG and unstructured query runners — and none of it is shared across workers. With more than one worker you'll get failed downloads (the "prepare" and "download" calls can land on different workers) and "job not found" while polling a query. Everything stored is in PostgreSQL now, so the database itself is ready for more workers and hosts; those in-memory pieces are what's left before scaling out. One worker comfortably serves a few hundred people: load-tested at 500 simulated users, median response 11 ms.
     - The backend must run close to the database (same AWS region/VPC as RDS). Most requests make one round trip to it; over a VPN that's ~100 ms each, in-region ~1 ms.
-    - Before go-live, and after every deploy, run `python scripts/preflight.py --workers 1` on the server. It checks that the changed files are the reviewed versions, the database connection, migrations, privileges, connection headroom and time zone, and exits non-zero on any failure.
+    - Before go-live, and after every deploy, run `python scripts/preflight.py --workers 1` on the server. It checks that the changed files are the reviewed versions, the database connection, migrations, privileges, connection headroom and time zone, and exits non-zero on any failure. Deployments that include Agentic RAG must have `V004__agentic_rag.sql` applied and at least one active RAG source/profile configured before the native tab can answer.
     - Connections: each worker opens up to `SMARTHUB_DB_POOL_MAX` (default 20) plus 8 for the Data API. Keep that well under the server's `max_connections`.
 - Frontend is just a static build, `npm run build` and serve `dist/` from nginx or wherever. Remember `.env` is baked in at build time — a config change means a rebuild.
 - Cron the two wrapper scripts for scheduled reports — again, fix the hardcoded paths, host and recipients first.
