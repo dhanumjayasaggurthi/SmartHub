@@ -1014,6 +1014,41 @@ class PostgreSQLConnector(BaseConnector):
                 metric = {"cosine_ops": "cosine", "l2_ops": "l2", "ip_ops": "inner_product"}.get(suffix)
                 if metric:
                     c["ann_indexes"].append({"name": index, "method": method, "metric": metric})
+            # Expression indexes require separate discovery: their first indkey
+            # entry is zero, so no pg_attribute join can identify a column.
+            from vector_index_strategy import halfvec_cast_index
+            cur.execute("""
+                SELECT ix.relname, am.amname, opc.opcname,
+                       pg_catalog.pg_get_indexdef(i.indexrelid, 1, true)
+                FROM pg_catalog.pg_index i
+                JOIN pg_catalog.pg_class rel ON rel.oid = i.indrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                JOIN pg_catalog.pg_class ix ON ix.oid = i.indexrelid
+                JOIN pg_catalog.pg_am am ON am.oid = ix.relam
+                JOIN pg_catalog.pg_opclass opc ON opc.oid = i.indclass[0]
+                WHERE ns.nspname = %s AND rel.relname = %s
+                  AND i.indisvalid AND i.indisready AND i.indnkeyatts = 1
+                  AND i.indpred IS NULL AND i.indexprs IS NOT NULL
+                  AND am.amname = 'hnsw' AND opc.opcname IN
+                      ('halfvec_cosine_ops', 'halfvec_l2_ops', 'halfvec_ip_ops')
+            """, (schema.lower(), table.lower()))
+            for index, method, opclass, expression in cur.fetchall():
+                match = halfvec_cast_index(expression)
+                if match is None:
+                    continue
+                name, dimension = match
+                column = by_name.get(name)
+                if not column or column["type"] != "vector" or column["dimensions"] != dimension:
+                    continue
+                # Opclass membership must be from the installed pgvector extension.
+                metric = {"halfvec_cosine_ops": "cosine",
+                          "halfvec_l2_ops": "l2",
+                          "halfvec_ip_ops": "inner_product"}.get(opclass)
+                if metric:
+                    column["ann_indexes"].append({
+                        "name": index, "method": method, "metric": metric,
+                        "index_kind": "halfvec_cast", "index_dimensions": dimension,
+                    })
             return columns
         finally:
             cur.close()
@@ -1096,8 +1131,19 @@ class PostgreSQLConnector(BaseConnector):
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ConnectorError("Vector result limit must be a positive integer.")
         kind = vector_meta["type"]
-        literal = self._vector_literal(query_vector, kind, metric)
         dims = vector_meta.get("dimensions")
+        # Prefer an expression HNSW strategy only when no native ANN index
+        # exists for the metric. Exact search always uses full precision.
+        indexed_cast = (
+            next((item for item in vector_meta.get("ann_indexes", [])
+                  if item.get("index_kind") == "halfvec_cast" and item["metric"] == metric), None)
+            if search_mode == "auto" and kind == "vector"
+            and not any(item["metric"] == metric and item.get("index_kind") != "halfvec_cast"
+                        for item in vector_meta.get("ann_indexes", []))
+            else None
+        )
+        literal_kind = "halfvec" if indexed_cast else kind
+        literal = self._vector_literal(query_vector, literal_kind, metric)
         if dims is not None and dims != len(query_vector):
             raise ConnectorError(
                 f"Column '{vector_meta['name']}' needs {dims} dimensions; "
@@ -1127,6 +1173,10 @@ class PostgreSQLConnector(BaseConnector):
         filter_sql = self._vector_filter_sql(filters, params)
         if filter_sql:
             predicates.append(filter_sql)
+        if indexed_cast:
+            dim = indexed_cast["index_dimensions"]
+            operand = f"({col}::{ext}.halfvec({dim}))"
+            cast = f"{ext}.halfvec({dim})"
         distance = f"{operand} {op} %(query_vector)s::{cast}"
         order_distance = f"({distance}) + 0" if search_mode == "exact" else distance
         selected = ", ".join([q(c) for c in columns] + [f"{distance} AS __vector_distance"])
