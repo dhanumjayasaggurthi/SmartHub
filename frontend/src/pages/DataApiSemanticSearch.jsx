@@ -159,6 +159,7 @@ function AliasEditor({ apiId, table, library, onDone, showToast }) {
   const opts = state?.options || {};
   const set = (k, v) => { setForm((f) => ({ ...f, [k]: v })); setReport(null); };
   const vec = (opts.vector_columns || []).find((c) => c.name === form.vector_column);
+  const vectorStrategies = opts.vector_index_strategies?.[form.vector_column] || [];
   const txt = (opts.text_columns || []).find((c) => c.name === form.text_column);
   const registered = state?.registrations?.[form.vector_column];
   const changingModel = registered && modelId && registered.model_id !== modelId;
@@ -240,6 +241,10 @@ function AliasEditor({ apiId, table, library, onDone, showToast }) {
               <option key={c.name} value={c.name}>{c.name} · {c.type}({c.dimensions ?? 'variable'}) · index: {c.ann_metrics.join('/') || 'none'}</option>
             ))}
           </select>
+          {vectorStrategies.length > 0 && (
+            <Hint>Recognized index: {vectorStrategies.map((i) =>
+              `${i.method.toUpperCase()} ${i.metric} · ${i.representation}`).join(', ')}</Hint>
+          )}
         </div>
         <div>
           <Label>Model that built this column (shared)</Label>
