@@ -10,7 +10,8 @@ Merge/deploy: pending review and live environment signoff.
 - [x] Existing alias validation accepts recognized ANN strategy.
 - [x] Alias UI displays recognized ANN storage representation.
 - [x] Pure parser unit tests and PostgreSQL integration fixture added.
-- [ ] Confirm unit and PostgreSQL integration tests passing on CI.
+- [x] GitHub Actions CI: 66 tests passed, 1 optional test skipped, including real PostgreSQL/pgvector expression-index query/EXPLAIN and API save validation (run 38292976752).
+- [x] Frontend build and Python syntax check passed in CI (run 38292976752).
 - [ ] Confirm actual source catalog/index mapping and query plans in staging.
 - [ ] Benchmark real model, recall and latency with the HAQ dataset.
 - [ ] Reviewed database migration for the selected source indexes.
