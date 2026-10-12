@@ -2952,7 +2952,11 @@ def _validate_alias_search(t, raw_settings: dict, register: Dict[str, str], repl
                     ann = [i for i in vec.get("ann_indexes", []) if i["metric"] == s["metric"]]
                     info["vector"] = {"type": vec["type"], "dimensions": vec["dimensions"],
                                       "pgvector": vec.get("extension_version"),
-                                      "ann_indexes": [f"{i['name']} ({i['method']}, {i['metric']})" for i in vec.get("ann_indexes", [])]}
+                                      "ann_indexes": [
+                                          f"{i['name']} ({i['method']}, {i['metric']}"
+                                          + (", halfvec expression" if i.get("index_kind") == "halfvec_cast" else "") + ")"
+                                          for i in vec.get("ann_indexes", [])
+                                      ]}
                     if model and vec["dimensions"] is not None and vec["dimensions"] != model.dimensions:
                         errors.append(f"Model '{model.name}' produces {model.dimensions} dimensions but '{col}' stores {vec['dimensions']}.")
                     if vec["dimensions"] is None and not s["allow_exact"]:
@@ -3295,6 +3299,14 @@ def get_alias_search(api_id: str, table_id: str, auth: dict = Depends(require_pe
                                         "pgvector": v.get("extension_version"),
                                         "ann_metrics": sorted({i["metric"] for i in v.get("ann_indexes", [])})}
                                        for v in vectors],
+                    "vector_index_strategies": {
+                        v["name"]: [
+                            {"name": i["name"], "method": i["method"], "metric": i["metric"],
+                             "representation": "halfvec expression" if i.get("index_kind") == "halfvec_cast"
+                                               else v["type"]}
+                            for i in v.get("ann_indexes", [])
+                        ] for v in vectors
+                    },
                     "text_columns": [{"name": c, "type": by_type[c],
                                       "gin_configs": sorted({i["config"] or "(stored tsvector)" for i in indexes if i["column"] == c})}
                                      for c in meta.exposed if by_type.get(c) in _TEXT_TYPES],
