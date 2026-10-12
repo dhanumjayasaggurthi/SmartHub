@@ -79,6 +79,16 @@ CREATE TABLE {SCHEMA}.drift AS SELECT * FROM {SCHEMA}.rim_chunks;
 ALTER TABLE {SCHEMA}.drift ADD PRIMARY KEY (chunk_id);
 CREATE INDEX ON {SCHEMA}.drift USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX drift_gin ON {SCHEMA}.drift USING gin (to_tsvector('english', chunk_text));
+CREATE TABLE {SCHEMA}.wide_chunks (id INTEGER PRIMARY KEY, question TEXT, embedding vector(3072));
+INSERT INTO {SCHEMA}.wide_chunks
+SELECT i, 'Regulatory question chunk ' || i,
+       (SELECT ('[' || string_agg(sin((i + d) / 7.0)::text, ',') || ']')::vector(3072)
+          FROM generate_series(1, 3072) d)
+FROM generate_series(1, 20) i;
+CREATE INDEX wide_chunks_halfvec_hnsw ON {SCHEMA}.wide_chunks
+  USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
+CREATE INDEX wide_chunks_question_gin ON {SCHEMA}.wide_chunks
+  USING gin (to_tsvector('english', question));
 ANALYZE;
 """
 
@@ -114,6 +124,7 @@ ALIASES = [
     ("chunks_b", "rim_chunks", ""),          # a second API alias over the SAME table
     ("narrow", "rim_chunks", "chunk_id,chunk_text,embedding"),
     ("nofts", "no_fts", ""), ("noann", "no_ann", ""), ("big", "big", ""), ("drift", "drift", ""),
+    ("wide", "wide_chunks", "id,question,embedding"),
 ]
 
 
@@ -159,7 +170,7 @@ def env():
         "permissions": {"manageDataAPIExports": True}}
     client = TestClient(app)
     models = {}
-    for name, dims in (("fake8", 8), ("fake8b", 8), ("fake3", 3)):
+    for name, dims in (("fake8", 8), ("fake8b", 8), ("fake3", 3), ("fake3072", 3072)):
         r = client.post("/data-api/search/models", json={"name": name, "deployment": "fake", "dimensions": dims})
         assert r.status_code == 200, r.text
         models[name] = r.json()["id"]
@@ -272,6 +283,32 @@ def test_keyword_timeout_is_per_alias_and_degrades_to_semantic(env):
     body = r.json()
     assert any("keyword search timed out" in w for w in body["warnings"])
     assert all(m["sparse_score"] is None and m["dense_score"] is not None for m in body["results"][0]["matches"])
+
+
+def test_wide_halfvec_index_config_and_retrieval(env):
+    """A full-precision vector column can use a halfvec expression HNSW."""
+    with env["api"]._connector("postgresql", "DEV", env["dbname"]) as source:
+        vec = next(v for v in source.get_vector_columns(
+            env["dbname"], SCHEMA, "wide_chunks") if v["name"] == "embedding")
+        indexes = [i for i in vec["ann_indexes"] if i["metric"] == "cosine"]
+        assert len(indexes) == 1 and indexes[0]["index_kind"] == "halfvec_cast"
+        q = [math.sin((1 + d) / 7.0) for d in range(1, 3073)]
+        stmt, params = source._vector_statement(SCHEMA, "wide_chunks", ["id"], vec,
+                                                 q, 3, "cosine", None, "auto", ["id"])
+        assert "halfvec(3072)" in stmt
+        with source.read_only_transaction(env["dbname"], 10000) as cur:
+            source.prefer_index(cur)
+            cur.execute("EXPLAIN " + stmt, params)
+            plan = "\n".join(x[0] for x in cur.fetchall())
+            assert "wide_chunks_halfvec_hnsw" in plan, plan
+        candidates = source.search_vector_rows(env["dbname"], SCHEMA,
+            "wide_chunks", ["id"], vec, q, 3, search_mode="auto", key_columns=["id"])
+        assert candidates and candidates[0]["row"]["id"] == 1
+        exact = source.search_vector_rows(env["dbname"], SCHEMA,
+            "wide_chunks", ["id"], vec, q, 3, search_mode="exact", key_columns=["id"])
+        assert exact and exact[0]["row"]["id"] == 1
+    result = env["save"]("wide", register="fake3072", text_column="question")
+    assert result["saved"] and not result["errors"]
 
 
 # ------------------------------------------------ save-time validation (422)

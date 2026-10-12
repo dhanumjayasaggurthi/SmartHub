@@ -1,0 +1,57 @@
+name: Generic halfvec search validation
+on:
+  push:
+    branches: [feature-generic-halfvec-expression-search]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_only"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATA_API_TEST_PG_DSN: "postgresql://ci:ci_only@localhost:5432/ci_only"
+      SMARTHUB_DB_DSN: "postgresql://ci:ci_only@localhost:5432/ci_only"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install backend and test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r backend/requirements.txt
+          python -m pip install --disable-pip-version-check pytest httpx
+      - name: Syntax validation
+        run: python -m compileall -q backend
+      - name: Unit and PostgreSQL retrieval regression tests
+        working-directory: backend
+        run: pytest -q tests/test_halfvec_expression_strategy.py tests/test_data_api_retrieval.py tests/test_data_api_retrieval_pg.py
+  frontend-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
